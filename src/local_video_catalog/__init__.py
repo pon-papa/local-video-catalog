@@ -20,10 +20,14 @@ APPLICATION_VERSION = "0.1.0"
 再処理されない（再利用キーは各工程の IMPL_VERSION と config_hash 側にある）。
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 """SQLite スキーマのバージョン。互換性のない変更で +1 する。
 
 1 = 一般配布版の初版。
+2 = asset_descriptions へ、説明文の材料に使った文字起こしの内訳
+    （transcript_segment_count / transcript_excluded_count）を追加。
+    **幻覚疑いを何件外したか**を後から確認できるようにするため。
+    既存テーブルの列を足すだけなので、既存データはそのまま使える。
 
 旧個人版は SCHEMA_VERSION 7 まで育っていたが、こちらは**新規の台帳**
 として 1 から始める。旧版の DB を読み込む機能は持たない

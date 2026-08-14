@@ -111,6 +111,11 @@ def collect_material(database, asset_id: str) -> builder.DescriptionMaterial:
     material.transcript_excerpt = text[:builder.TRANSCRIPT_EXCERPT_CHARS]
     material.transcript_excluded_count = excluded
     material.transcript_status = status
+
+    transcripts = database.get_transcripts_for_asset(asset_id)
+    if transcripts:
+        material.transcript_segment_count = len(
+            database.get_transcript_segments(transcripts[0]["transcript_id"]))
     return material
 
 
@@ -139,10 +144,20 @@ def run_description(asset_id: str, context,
                               "台帳にこの動画がありません。")
 
     material = collect_material(database, asset_id)
-    if material.transcript_excluded_count:
-        logger.info(f"    定型の疑いがある発話 "
-                    f"{material.transcript_excluded_count} 件を材料から外します"
-                    "（記録は残します）。")
+    if material.transcript_segment_count:
+        logger.info(
+            f"    文字起こしの材料: セグメント {material.transcript_segment_count} 件中 "
+            f"{material.transcript_used_count} 件を使用 / "
+            f"{material.transcript_excluded_count} 件を除外（定型の疑い）")
+        logger.event("description_material",
+                     asset_id=asset_id,
+                     transcript_segments=material.transcript_segment_count,
+                     transcript_used=material.transcript_used_count,
+                     transcript_excluded=material.transcript_excluded_count,
+                     used_visual=material.has_visual)
+        if material.transcript_excluded_count and not material.has_speech:
+            logger.info("    使える発話が残らなかったため、"
+                        "映像の情報だけで説明文を作ります。")
 
     settings = vc.VlmSettings.from_settings(context.raw)
     description_model = str(
@@ -215,6 +230,8 @@ def run_description(asset_id: str, context,
             "recorded_raw_text": material.period.note,
             "used_visual_analysis": 1 if material.has_visual else 0,
             "used_transcription": 1 if material.has_speech else 0,
+            "transcript_segment_count": material.transcript_segment_count,
+            "transcript_excluded_count": material.transcript_excluded_count,
             "generator": generator, "model_id": model_id or None,
             "implementation_version": DESCRIPTION_IMPL_VERSION,
             "created_at": local_now_iso(), "updated_at": local_now_iso(),

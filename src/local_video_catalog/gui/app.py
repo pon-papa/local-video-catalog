@@ -159,6 +159,7 @@ class CatalogWindow:
         outputs = ttk.LabelFrame(outer, text="結果を見る / お手入れ", padding=8)
         outputs.pack(fill="x", pady=(8, 0))
         for label, command in (
+            ("解析結果のまとめ", self._show_summary),
             ("HTMLカタログを更新", self._update_catalog),
             ("HTMLカタログを開く", self._open_catalog),
             ("説明文を開く", self._open_descriptions),
@@ -320,6 +321,17 @@ class CatalogWindow:
             "区切りのよいところまで進んでから停止します。")
 
     # -- 成果物 -----------------------------------------------------------
+
+    def _show_summary(self) -> None:
+        """解析結果のまとめをログ欄へ出す。**何も変更しない。**"""
+        self._clear_log()
+        self.status_var.set("解析結果を集計しています…")
+        self.root.update_idletasks()
+        folder = self.source_var.get().strip()
+        result = runner_module.show_summary(folder or None)
+        for line in result.lines:
+            self._append(line)
+        self.status_var.set("解析結果のまとめを表示しました。")
 
     def _update_catalog(self) -> None:
         self.status_var.set("HTMLカタログを更新しています…")

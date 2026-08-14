@@ -695,6 +695,10 @@ CREATE TABLE IF NOT EXISTS asset_descriptions (
     recorded_raw_text        TEXT,
     used_visual_analysis     INTEGER NOT NULL DEFAULT 0,
     used_transcription       INTEGER NOT NULL DEFAULT 0,
+    -- 説明文の材料に使った文字起こしの内訳（schema_version 2）。
+    -- 幻覚疑いを何件外したかを後から確認できるようにする。
+    transcript_segment_count INTEGER NOT NULL DEFAULT 0,
+    transcript_excluded_count INTEGER NOT NULL DEFAULT 0,
     generator                TEXT,
     model_id                 TEXT,
     implementation_version   TEXT,
@@ -803,8 +807,15 @@ class CatalogDatabase:
             実際に追加した列の一覧（``テーブル.列`` 形式）。
         """
         added: list[str] = []
-        # 一般配布版は SCHEMA_VERSION 1 から始まる。将来の版で
-        # 列を足すときは、ここへ _ensure_column を並べる。
+
+        # --- schema_version 2: 説明文の材料に使った文字起こしの内訳 ---
+        added += self._ensure_column(
+            "asset_descriptions", "transcript_segment_count",
+            "INTEGER NOT NULL DEFAULT 0")
+        added += self._ensure_column(
+            "asset_descriptions", "transcript_excluded_count",
+            "INTEGER NOT NULL DEFAULT 0")
+
         return added
 
     def table_columns(self, table: str) -> set[str]:
@@ -1778,7 +1789,8 @@ class CatalogDatabase:
         "file_name", "description_file_path", "description_status",
         "recorded_from", "recorded_to", "recorded_precision",
         "recorded_source", "recorded_raw_text", "used_visual_analysis",
-        "used_transcription", "generator", "model_id",
+        "used_transcription", "transcript_segment_count",
+        "transcript_excluded_count", "generator", "model_id",
         "implementation_version", "created_at", "updated_at",
     )
 

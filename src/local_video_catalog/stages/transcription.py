@@ -253,9 +253,21 @@ def run_transcription(asset_id: str, context) -> "pipeline_module.StageOutcome":
 
     suspected = merged.suspected_count
     logger.info(f"    チャンク {processed + reused}/{len(planned)}"
-                f"（新規 {processed} / 再利用 {reused} / 失敗 {failed}）"
-                f"・セグメント {len(merged.segments)} 件"
-                + (f"・うち定型の疑い {suspected} 件" if suspected else ""))
+                f"（新規 {processed} / 再利用 {reused} / 失敗 {failed}）")
+    logger.info(f"    セグメント {len(merged.segments)} 件 / "
+                f"定型の疑い {suspected} 件 / 本文 {len(merged.text)} 文字")
+    if suspected:
+        logger.info("    疑いのある発話も記録は残します。"
+                    "説明文の材料からだけ外します。")
+    for warning in merged.warnings[:5]:
+        logger.info(f"    参考: {warning}")
+
+    logger.event("transcription_finished", asset_id=asset_id,
+                 status=merged.status, chunks_planned=len(planned),
+                 chunks_processed=processed, chunks_reused=reused,
+                 chunks_failed=failed, segments=len(merged.segments),
+                 suspected_hallucination=suspected,
+                 characters=len(merged.text))
 
     if incomplete:
         # **completed にしない。** 次回に残りをやり直す。

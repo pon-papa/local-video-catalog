@@ -5,6 +5,12 @@ rem
 rem  This file is encoded in Shift-JIS (CP932) because cmd.exe
 rem  reads batch files with the OEM code page, not UTF-8.
 rem  The Japanese messages below are intentional.
+rem
+rem  Search order:
+rem    1. runtime\python.exe   (bundled; the user needs no Python)
+rem    2. py -3                (Python launcher)
+rem    3. python               (on PATH)
+rem  Bundling is optional: without runtime\ this behaves as before.
 rem ============================================================
 chcp 932 >nul 2>&1
 setlocal
@@ -22,7 +28,17 @@ if not exist "%ROOT%app-root.marker" (
     exit /b 1
 )
 
-rem --- Python 3.13 以降を探す ---
+rem --- 1. 同梱 runtime を最優先で使う ---
+rem     利用者に Python を意識させないための経路。
+rem     Tcl/Tk も runtime\ の中に置く（tkinter に必要）。
+if exist "%ROOT%runtime\python.exe" (
+    if exist "%ROOT%runtime\tcl\tcl8.6" set "TCL_LIBRARY=%ROOT%runtime\tcl\tcl8.6"
+    if exist "%ROOT%runtime\tcl\tk8.6" set "TK_LIBRARY=%ROOT%runtime\tcl\tk8.6"
+    start "" "%ROOT%runtime\python.exe" -X utf8 "%APP%"
+    exit /b 0
+)
+
+rem --- 2. Python launcher ---
 set "LAUNCHER="
 for %%P in (py.exe) do if not defined LAUNCHER set "LAUNCHER=%%~$PATH:P"
 if defined LAUNCHER (
@@ -33,6 +49,7 @@ if defined LAUNCHER (
     )
 )
 
+rem --- 3. PATH 上の python ---
 set "PYTHON="
 for %%P in (python.exe) do if not defined PYTHON set "PYTHON=%%~$PATH:P"
 if defined PYTHON (

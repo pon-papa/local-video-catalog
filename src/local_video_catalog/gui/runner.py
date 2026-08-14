@@ -31,6 +31,7 @@ MODULE_PIPELINE = "local_video_catalog.pipeline"
 MODULE_ENVIRONMENT = "local_video_catalog.environment_check"
 MODULE_CATALOG = "local_video_catalog.html_catalog"
 MODULE_PROGRESS = "local_video_catalog.stage_report"
+MODULE_SUMMARY = "local_video_catalog.run_summary"
 
 
 def python_executable() -> str:
@@ -212,6 +213,12 @@ def preview_targets(arguments: list[str]) -> TaskResult:
 
 def update_catalog() -> TaskResult:
     return run_and_collect(MODULE_CATALOG, [], timeout=180)
+
+
+def show_summary(source_folder: str | None = None) -> TaskResult:
+    """解析結果のまとめ。試験後の確認に使う。**読み取りだけ。**"""
+    arguments = ["--source-folder", source_folder] if source_folder else []
+    return run_and_collect(MODULE_SUMMARY, arguments, timeout=180)
 
 
 def retry_failed(arguments: list[str], catalog_ids: list[str]) -> BackgroundTask:

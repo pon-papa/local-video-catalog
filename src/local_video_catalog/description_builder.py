@@ -93,7 +93,14 @@ class DescriptionMaterial:
     visual_model: str = ""
     transcript_excerpt: str = ""
     transcript_excluded_count: int = 0
+    transcript_segment_count: int = 0
     transcript_status: str = ""
+
+    @property
+    def transcript_used_count(self) -> int:
+        """説明文の材料に実際に使ったセグメント数。"""
+        return max(0, self.transcript_segment_count
+                   - self.transcript_excluded_count)
 
     @property
     def has_visual(self) -> bool:
