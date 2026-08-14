@@ -174,14 +174,22 @@ def _upsert_asset(
                 registration_status=db_module.REG_EXISTING)
         return (existing["asset_id"], db_module.REG_EXISTING)
 
-    # 同じ内容のファイルが別の場所にあれば「移動」とみなす
+    # 同じ内容のファイルが「移動」したのかを見る。
+    #
+    # **元の場所にまだファイルがあるなら、それは移動ではなく複製である。**
+    # 内容が同じというだけで束ねると、同一内容の動画が同じフォルダーに
+    # 複数あるとき、2 本目以降が 1 本目の行を奪い合い、台帳から消える。
     if file_fp:
-        same_content = [
+        candidates = [
             row for row in database.find_assets_by_file_fingerprint(file_fp)
             if str(row["source_root"]) == str(found.source.root)
         ]
-        if len(same_content) == 1:
-            row = same_content[0]
+        vanished = [
+            row for row in candidates
+            if not (Path(row["source_root"]) / row["source_relative"]).is_file()
+        ]
+        if len(vanished) == 1:
+            row = vanished[0]
             with database.transaction():
                 database.update_asset_seen(
                     row["asset_id"], source=found.source, file_size=found.size,

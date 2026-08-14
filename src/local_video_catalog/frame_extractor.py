@@ -32,6 +32,16 @@ DEFAULT_EDGE_MARGIN_SECONDS = 1.0
 DEFAULT_MAXIMUM_IMAGE_DIMENSION = 768
 DEFAULT_JPEG_QUALITY = 2
 
+TAIL_GUARD_MILLISECONDS = 100
+"""末尾からこれだけ手前までを抽出対象にする。
+
+再生時間ちょうどの 1ms 手前を指定すると、**復号できる最終フレームを
+越えてしまい、ffmpeg が画像を出さない**。フレームレートが低い動画ほど
+起こりやすく、短い動画では最後の 1 枚が必ず失敗していた。
+
+0.1 秒は 10fps でも 1 フレームぶんにあたる。
+"""
+
 IMAGE_FORMAT = "jpeg"
 
 FRAME_OK = "ok"
@@ -165,14 +175,15 @@ def plan_frames(duration_seconds: float,
         raw_times = [start + span * i / (count - 1) for i in range(count)]
 
     limit_ms = int(duration_seconds * 1000)
+    # 末尾ぎりぎりを指すと最終フレームを越えて取りこぼす。手前で止める。
+    safe_limit_ms = max(0, limit_ms - TAIL_GUARD_MILLISECONDS)
     seen: set[int] = set()
     frames: list[PlannedFrame] = []
     for seconds in raw_times:
         clamped = min(max(seconds, 0.0), duration_seconds)
         ms = int(round(clamped * 1000))
-        # 動画長ちょうど・超過を避ける（最終フレームの取りこぼし対策）
-        if ms >= limit_ms:
-            ms = max(0, limit_ms - 1)
+        if ms > safe_limit_ms:
+            ms = safe_limit_ms
         if ms in seen:
             continue
         seen.add(ms)

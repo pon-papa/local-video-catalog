@@ -339,6 +339,45 @@ class RegistrationTests(TempAppRootTestCase):
         self.assertEqual(self.db.list_assets_under(self.source_root), [])
 
     @requires_ffprobe
+    def test_identical_files_are_separate_assets(self) -> None:
+        """**内容が同じでも、両方あるなら別の動画として登録する。**
+
+        「同じ内容 = 移動」と決めつけると、同一内容の動画が同じフォルダーに
+        複数あるとき、2 本目以降が 1 本目の行を奪い合って台帳から消える。
+        """
+        for name in ("a.mp4", "b.mp4", "c.mp4"):
+            target = self.source_root / name
+            target.write_bytes(b"x" * 3000)
+
+        summary = register.register_folder(
+            self.source_root, self._settings(), self.db, self.logger,
+            run_id="r1")
+        self.assertEqual(summary.discovered, 3)
+        self.assertEqual(len(self.db.list_assets_under(self.source_root)), 3)
+        self.assertEqual(summary.moved, 0)
+
+    @requires_ffprobe
+    def test_a_real_move_is_still_detected(self) -> None:
+        """元の場所から消えていれば、移動として同じ行を使い続ける。"""
+        original = self.source_root / "a.mp4"
+        original.write_bytes(b"x" * 3000)
+        settings = self._settings()
+        register.register_folder(self.source_root, settings, self.db,
+                                 self.logger, run_id="r1")
+        first = self.db.list_assets_under(self.source_root)[0]
+
+        original.rename(self.source_root / "renamed.mp4")
+        summary = register.register_folder(self.source_root, settings, self.db,
+                                           self.logger, run_id="r2")
+
+        rows = self.db.list_assets_under(self.source_root)
+        self.assertEqual(len(rows), 1, "移動で行が増えています。")
+        self.assertEqual(rows[0]["asset_id"], first["asset_id"])
+        self.assertEqual(rows[0]["source_relative"], "renamed.mp4")
+        self.assertEqual(rows[0]["original_source_relative"], "a.mp4")
+        self.assertEqual(summary.moved, 1)
+
+    @requires_ffprobe
     def test_vanished_videos_are_flagged_not_deleted(self) -> None:
         video = self._make_video("a.mp4")
         settings = self._settings()

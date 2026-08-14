@@ -158,6 +158,22 @@ class StageRunners:
         return getattr(self, stage, None)
 
 
+def default_runners() -> StageRunners:
+    """本番で使う工程の実体。
+
+    ``stages`` を遅延して読み込むのは、循環参照を避けるため
+    （各工程は ``pipeline`` の ``StageOutcome`` を使う）。
+    """
+    from . import stages
+
+    return StageRunners(
+        frame_extraction=stages.run_frame_extraction,
+        visual_analysis=stages.run_visual_analysis,
+        audio_transcription=stages.run_transcription,
+        description=stages.run_description,
+    )
+
+
 @dataclass
 class PipelineResult:
     stop_reason: str = STOP_FINISHED
@@ -494,7 +510,7 @@ def run(args: argparse.Namespace,
                     application_version=APPLICATION_VERSION)
 
             result = run_pipeline(
-                context, targets, runners or StageRunners(),
+                context, targets, runners or default_runners(),
                 skip_stages=skip, consecutive_failure_limit=limit,
                 recycle_cache=recycle_cache)
 

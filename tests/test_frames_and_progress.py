@@ -61,6 +61,24 @@ class FramePlanningTests(unittest.TestCase):
         for frame in fx.plan_frames(duration, self.config):
             self.assertLess(frame.target_time_milliseconds, int(duration * 1000))
 
+    def test_tail_guard_keeps_the_last_frame_decodable(self) -> None:
+        """**末尾ぎりぎりを指すと、復号できる最終フレームを越える。**
+
+        1ms 手前では低フレームレートの動画で必ず取りこぼしていた。
+        """
+        for duration in (2.0, 3.0, 10.0, 600.0):
+            with self.subTest(duration=duration):
+                frames = fx.plan_frames(duration, self.config)
+                last = frames[-1].target_time_milliseconds
+                self.assertLessEqual(
+                    last, int(duration * 1000) - fx.TAIL_GUARD_MILLISECONDS)
+
+    def test_tail_guard_never_goes_negative(self) -> None:
+        for duration in (0.05, 0.1, 0.2):
+            with self.subTest(duration=duration):
+                for frame in fx.plan_frames(duration, self.config):
+                    self.assertGreaterEqual(frame.target_time_milliseconds, 0)
+
     def test_very_short_video_deduplicates(self) -> None:
         frames = fx.plan_frames(0.05, self.config)
         times = [f.target_time_milliseconds for f in frames]
