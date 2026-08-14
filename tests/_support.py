@@ -181,6 +181,46 @@ def make_synthetic_video(
             and target.stat().st_size > 0)
 
 
+def code_strings_and_calls(module) -> tuple[list[str], list[str]]:
+    """docstring を除いた文字列定数と、呼び出している関数名を集める。
+
+    文字列を素朴に grep すると、**方針を説明した docstring** まで
+    引っかかって役に立たない（「%LOCALAPPDATA% は使わない」と書いた
+    説明が、使っている証拠として検出されてしまう）。構文木を見て
+    「実際に使っているか」だけを調べる。
+    """
+    import ast
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        for statement in getattr(node, "body", []):
+            if (isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Constant)
+                    and isinstance(statement.value.value, str)):
+                docstrings.add(id(statement.value))
+
+    strings = [
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+
+    calls: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute):
+            calls.append(node.func.attr)
+        elif isinstance(node.func, ast.Name):
+            calls.append(node.func.id)
+    return (strings, calls)
+
+
 def quiet_logger(log_dir: Path, run_id: str):
     """テスト用のログ。**ファイルへは書くが、コンソールへは出さない。**
 

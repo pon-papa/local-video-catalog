@@ -348,44 +348,9 @@ class NoHiddenStateTests(TempDirTestCase):
     FORBIDDEN_CALLS = ("expanduser", "home", "gettempdir", "mkdtemp")
 
     def _code_strings_and_calls(self, module) -> tuple[list[str], list[str]]:
-        """docstring を除いた文字列定数と、呼び出している関数名を集める。"""
-        import ast
+        from _support import code_strings_and_calls
 
-        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-
-        docstrings = set()
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                                 ast.AsyncFunctionDef)):
-                body = getattr(node, "body", [])
-                if (body and isinstance(body[0], ast.Expr)
-                        and isinstance(body[0].value, ast.Constant)
-                        and isinstance(body[0].value.value, str)):
-                    docstrings.add(id(body[0].value))
-            # 定数のあとに置かれた説明文字列（属性 docstring）も除く
-            if isinstance(node, (ast.Module, ast.ClassDef)):
-                for statement in getattr(node, "body", []):
-                    if (isinstance(statement, ast.Expr)
-                            and isinstance(statement.value, ast.Constant)
-                            and isinstance(statement.value.value, str)):
-                        docstrings.add(id(statement.value))
-
-        strings = [
-            node.value for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and id(node) not in docstrings
-        ]
-
-        calls: list[str] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Attribute):
-                calls.append(func.attr)
-            elif isinstance(func, ast.Name):
-                calls.append(func.id)
-        return strings, calls
+        return code_strings_and_calls(module)
 
     def test_paths_reads_no_user_profile_environment_variables(self) -> None:
         strings, _ = self._code_strings_and_calls(paths)
