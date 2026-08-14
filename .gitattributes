@@ -1,0 +1,27 @@
+# =====================================================================
+#  local-video-catalog — .gitattributes
+#
+#  リポジトリ内では LF で保持する。作業ツリーの改行は Git に任せる。
+#  .cmd だけは CRLF を強制する（cmd.exe は LF のみのバッチで
+#  行の解釈を誤ることがある）。
+# =====================================================================
+
+* text=auto eol=lf
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# バイナリ（誤って追加されたときに差分を壊さないため）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
+*.bin binary
+*.gguf binary
+*.sqlite3 binary
+*.gz binary

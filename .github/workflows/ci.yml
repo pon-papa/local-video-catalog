@@ -1,0 +1,159 @@
+name: ci
+
+# local-video-catalog の自動検査。
+#
+# このワークフローは次に一切依存しない:
+#   - 実際の動画・画像・音声
+#   - ユーザー固有のパス・ドライブ
+#   - LM Studio / 外部 AI API
+#   - AI モデルのダウンロード
+#   - userdata\config\settings.json（Git 管理外）
+#
+# 使用するデータは、ワークフロー内で生成する合成データだけ。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------
+  # 1. 個人データが混入していないことの確認（最優先）
+  #
+  #    このアプリは One-Folder 完結型で、実行時データが作業ツリー内の
+  #    userdata\ に現れうる。.gitignore だけに頼らず、
+  #    実際に追跡されているファイルを検査する。
+  # -------------------------------------------------------------------
+  privacy-guard:
+    name: privacy guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run privacy guard
+        run: python tools/privacy_guard.py
+
+      - name: Ensure userdata contents are not tracked
+        run: |
+          set -e
+          bad=$(git ls-files | grep -E '^userdata/' | grep -v '^userdata/\.gitignore$' || true)
+          if [ -n "$bad" ]; then
+            echo "userdata 配下が追跡されています:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "userdata 配下の追跡なし: OK"
+
+      - name: Ensure the userdata guard files exist
+        run: |
+          set -e
+          test -f app-root.marker
+          test -f userdata/.gitignore
+          grep -qx '/userdata/\*' .gitignore
+          grep -qx '!/userdata/\.gitignore' .gitignore
+          echo "二重防御の構成: OK"
+
+  # -------------------------------------------------------------------
+  # 2. 標準ライブラリだけで動くことの確認
+  #    サードパーティ Python パッケージをゼロに保つ。
+  # -------------------------------------------------------------------
+  unit:
+    name: unit tests (standard library only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Confirm no third-party packages are required
+        run: |
+          python -c "import sqlite3, csv, json, hashlib, gzip, uuid, argparse, unittest, logging, ctypes, concurrent.futures, urllib.request; print('standard library only: OK')"
+
+      - name: Confirm no dependency manifests exist
+        run: |
+          set -e
+          for name in requirements.txt Pipfile poetry.lock pyproject.toml; do
+            if [ -f "$name" ]; then
+              echo "$name があります。標準ライブラリのみの方針を確認してください。"
+              exit 1
+            fi
+          done
+          echo "依存マニフェストなし: OK"
+
+      - name: Run tests
+        env:
+          PYTHONPATH: src
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+          # ffmpeg / ffprobe を明示的に見つからなくして、
+          # 外部ツールを使うテストがスキップされることを確認する
+          LOCAL_VIDEO_CATALOG_FFMPEG: /nonexistent/ffmpeg
+          LOCAL_VIDEO_CATALOG_FFPROBE: /nonexistent/ffprobe
+        run: |
+          python -X utf8 -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Verify the working tree is still clean
+        run: |
+          set -e
+          found=$(git status --porcelain --untracked-files=all)
+          if [ -n "$found" ]; then
+            echo "テストが作業ツリーを汚しました:"
+            echo "$found"
+            exit 1
+          fi
+          echo "作業ツリーは clean です。"
+
+  # -------------------------------------------------------------------
+  # 3. ffmpeg を使うテスト
+  #    合成動画（testsrc / sine）を一時フォルダーへ生成して実行する。
+  #    Phase 4 以降でテストが増えたときに意味を持つ。
+  # -------------------------------------------------------------------
+  integration:
+    name: integration tests (with ffmpeg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Run all tests
+        env:
+          PYTHONPATH: src
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -X utf8 -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Verify no data files were created in the repository
+        run: |
+          set -e
+          found=$(git status --porcelain --untracked-files=all)
+          if [ -n "$found" ]; then
+            echo "作業ツリーが汚れています:"
+            echo "$found"
+            exit 1
+          fi
+          echo "作業ツリーは clean です。"
