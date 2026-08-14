@@ -1,0 +1,158 @@
+{
+  "_comment": [
+    "local-video-catalog — 設定のサンプル。",
+    "",
+    "このファイルは Git 管理対象です。実在するパスや個人情報を書かないでください。",
+    "実際の設定は userdata/config/settings.json に保存されます。",
+    "通常は画面（GUI）から設定するので、このファイルを手で編集する必要はありません。",
+    "",
+    "保存先（台帳・説明文・キャッシュ・ログ）はここに書けません。",
+    "アプリのフォルダー配下の userdata/ に固定されています。",
+    "設定で保存先を変えられるようにすると、中間ファイルを片付ける処理の",
+    "基点が設定値になり、設定が壊れたときに消す範囲が外へ広がるためです。",
+    "",
+    "ffmpeg / ffprobe は PATH に頼らず絶対パスの指定を推奨します。",
+    "1 台の PC に複数の ffmpeg があり、whisper フィルターを持つのは",
+    "片方だけ、ということが起こるためです。"
+  ],
+
+  "config_version": 1,
+
+  "source_path": "<解析したい動画フォルダーの絶対パス>",
+
+  "ffmpeg_path": "<ffmpeg.exe の絶対パス>",
+  "ffprobe_path": "<ffprobe.exe の絶対パス>",
+
+  "recursive": false,
+  "workers": 8,
+
+  "extensions": [
+    ".mp4", ".m4v", ".mov", ".mts", ".m2ts", ".avi",
+    ".mkv", ".mpg", ".mpeg", ".vob", ".webm", ".ts"
+  ],
+
+  "exclude_patterns": [
+    ".*",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    "__pycache__"
+  ],
+
+  "min_size_bytes": 0,
+  "ffprobe_timeout_sec": 60,
+
+  "full_hash": false,
+  "resume": true,
+  "follow_symlinks": false,
+
+  "fingerprint": {
+    "head_bytes": 1048576,
+    "tail_bytes": 1048576
+  },
+
+  "probe_cache": {
+    "enabled": true,
+    "gzip": true
+  },
+
+  "_vlm_comment": [
+    "映像解析（ローカル VLM）の設定。",
+    "",
+    "base_url は 127.0.0.1 / localhost / ::1 のみ許可されます。",
+    "それ以外を指定した場合、画像を送信する前に停止します。",
+    "外部 API・クラウド AI を使う設定は存在しません。",
+    "",
+    "maximum_concurrent_requests は 1 のみ許可（VRAM の少ない環境で同時送信しない）。",
+    "",
+    "timeout_seconds はフレーム 1 枚あたりの待ち時間（実測 20〜40 秒）。",
+    "summary_timeout_seconds は視覚概要の待ち時間。フレーム枚数に比例して",
+    "伸びる（実測 約16秒/枚。24 枚で約 390 秒）ため別枠にしています。",
+    "フレームと同じ 300 秒を適用すると、22〜24 枚の動画がまとめて失敗します。",
+    "",
+    "待ち時間は生成内容を変えないので config_hash には含まれません。",
+    "値を変えても、保存済みのフレーム解析はそのまま再利用されます。",
+    "",
+    "model_match は動作確認済みの qwen3-vl-8b-instruct を既定にしています。",
+    "モデルを変えると config_hash が変わるため、別モデルの解析結果が",
+    "再利用されることはありません。"
+  ],
+
+  "vlm": {
+    "base_url": "http://127.0.0.1:1234/v1",
+    "model_match": "qwen3-vl-8b-instruct",
+    "temperature": 0.1,
+    "top_p": 0.9,
+    "max_tokens_per_frame": 1000,
+    "max_tokens_summary": 1600,
+    "timeout_seconds": 300,
+    "summary_timeout_seconds": 1200,
+    "maximum_concurrent_requests": 1
+  },
+
+  "_description_comment": [
+    "最終テキスト（説明文）を書くモデル。",
+    "この工程は画像を送らないので、文章だけのモデルでも使えます。",
+    "空にすると映像解析と同じモデルを使います。"
+  ],
+
+  "description": {
+    "model_match": ""
+  },
+
+  "_asr_comment": [
+    "文字起こし（ローカル ASR / ffmpeg 内蔵 whisper フィルター）の設定。",
+    "外部 ASR API・クラウド文字起こしは使用しません。",
+    "",
+    "model_name はファイル名だけを書きます。実体は",
+    "userdata/models/whisper/ に置いてください。",
+    "whisper.cpp は非 ASCII を含むパスのファイルを開けないため、",
+    "実行時はアプリのフォルダーを作業ディレクトリにして ASCII の",
+    "相対パスで渡します（アプリのフォルダー名が日本語でも動きます）。",
+    "",
+    "vad_enabled: 実測で VAD は幻覚を抑制せず、無音 60 秒の処理が",
+    "約 3 秒から約 598 秒へ悪化し、日本語 CER が 0.000 から 0.737 へ",
+    "悪化しました。既定は false です。有効にしないでください。",
+    "",
+    "queue_seconds: 転写窓。既定 3 秒だと窓が重なり同じ内容が",
+    "繰り返し出るため 30 を推奨します。",
+    "",
+    "chunk_duration_seconds: 長時間動画をこの長さへ分割して 1 個ずつ",
+    "処理します。中断したときの損失を最大 1 チャンクに限定するためです。"
+  ],
+
+  "asr": {
+    "model_name": "ggml-large-v3-turbo-q5_0.bin",
+    "language": "ja",
+    "queue_seconds": 30,
+    "vad_enabled": false,
+    "vad_threshold": 0.5,
+    "chunk_duration_seconds": 300,
+    "chunk_overlap_seconds": 1.0,
+    "max_len": 0,
+    "use_gpu": true
+  },
+
+  "_run_comment": [
+    "1 回の実行の条件。画面からも指定できます。",
+    "",
+    "time_budget_minutes: 稼働時間。達したら区切りのよいところで安全停止します。",
+    "                     0 で時間制限なし。",
+    "max_videos: 今回あらたに処理する本数の上限。0 で制限なし。",
+    "            完了済みの動画は数に入れません。",
+    "",
+    "consecutive_failure_limit: 同じ種類の設備障害（LM Studio へつながらない、",
+    "応答が制限時間を超える等）が続いたときに安全停止する本数。",
+    "1 本目は個別の動画の問題かもしれず、2 本目でも偶然が残りますが、",
+    "成功を 1 本も挟まずに 3 本続けて同じ種類で落ちるのは設備側の問題です。",
+    "一晩中同じ失敗を繰り返して時間を浪費しないための安全弁です。"
+  ],
+
+  "run": {
+    "time_budget_minutes": 60,
+    "max_videos": 0,
+    "skip_visual_analysis": false,
+    "skip_transcription": false,
+    "recycle_cache": false,
+    "consecutive_failure_limit": 3
+  }
+}
