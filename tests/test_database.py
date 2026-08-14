@@ -204,6 +204,46 @@ class SourcePathTests(DatabaseTestCase):
         with self.assertRaises(ValueError):
             self.db.upsert_probe_result(asset_id, {"width": 640})
 
+    def test_counter_defaults_apply_to_every_upsert(self) -> None:
+        """**NOT NULL DEFAULT の列へ、未指定で NULL を入れないこと。**
+
+        全列を並べて未指定へ NULL を入れる書き方をすると、件数系の列が
+        既定値 0 を受け取れず IntegrityError になる。
+        """
+        asset_id = self.add_asset()
+        self.db.upsert_description({
+            "asset_id": asset_id, "catalog_id": "VID-000001",
+            "source_root": str(self.source_root), "source_relative": "a.mp4",
+            "file_name": "a.mp4",
+            "description_file_path": paths.descriptions_dir() / "a.txt",
+            "description_status": db_module.STATUS_COMPLETED,
+            "created_at": "t"})
+        row = self.db.get_description(asset_id)
+        self.assertEqual(row["used_visual_analysis"], 0)
+        self.assertEqual(row["used_transcription"], 0)
+
+    def test_created_at_is_not_overwritten_on_update(self) -> None:
+        asset_id = self.add_asset()
+        base = {
+            "asset_id": asset_id, "catalog_id": "VID-000001",
+            "source_root": str(self.source_root), "source_relative": "a.mp4",
+            "file_name": "a.mp4",
+            "description_file_path": paths.descriptions_dir() / "a.txt",
+            "description_status": db_module.STATUS_COMPLETED,
+            "created_at": "first"}
+        self.db.upsert_description(base)
+        self.db.upsert_description({**base, "created_at": "second",
+                                    "generator": "local-llm"})
+        row = self.db.get_description(asset_id)
+        self.assertEqual(row["created_at"], "first")
+        self.assertEqual(row["generator"], "local-llm")
+
+    def test_missing_required_column_is_refused(self) -> None:
+        asset_id = self.add_asset()
+        with self.assertRaises(ValueError):
+            self.db.upsert_description({"asset_id": asset_id,
+                                        "file_name": "a.mp4"})
+
 
 class InternalPathTests(DatabaseTestCase):
     """内部生成物は APP_ROOT 相対で保存すること。"""

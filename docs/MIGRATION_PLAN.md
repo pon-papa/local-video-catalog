@@ -391,12 +391,40 @@ Phase 0 (安全基盤) ──┐
 
 | Phase | 状態 | commit |
 |---|---|---|
-| 0 安全基盤 | **完了（承認待ち）** | — |
-| 1 土台 | 未着手 | |
-| 2 台帳 | 未着手 | |
-| 3 cleanup 境界 | 未着手 | |
-| 4 解析コア | 未着手 | |
-| 5 ローカル AI | 未着手 | |
-| 6 pipeline | 未着手 | |
-| 7 GUI | 未着手 | |
-| 8 配布・受け入れ | 未着手 | |
+| 0 安全基盤 | 完了 | `c98e2f6` / `0736f0e` |
+| 1 土台（paths / config / source_ref / logging） | 完了 | `d39f28c` |
+| 2 台帳 | 完了 | `0bf90da` |
+| 3 cleanup 境界 | 完了 | `7f15fc1` |
+| 4 解析コア | 完了 | `5d1ce4e` |
+| 5 ローカル AI | 完了 | `8544d02` |
+| 6 pipeline + 機能パリティ表 | 完了 | `c047d3e` |
+| 7 GUI（Python + tkinter） | 完了 | `b1ce65a` |
+| 8 配布・移動耐性・受け入れ準備 | **一部完了** | 下記 |
+
+### Phase 8 の内訳
+
+| 項目 | 状態 |
+|---|---|
+| フォルダー移動テスト（再解析が起きないこと） | 完了・自動テスト |
+| 残骸ゼロ確認（`%LOCALAPPDATA%` 等を使わないこと） | 完了・自動テスト |
+| `tools/make_release.py`（配布 zip） | 完了 |
+| 配布物の展開と起動確認 | 完了（別フォルダーで環境チェックが動作） |
+| **実動画での通し確認** | **未実施**（開発クローンでは実動画を使わない方針のため、利用者が運用フォルダーで行う） |
+| **各工程を台帳へ結びつける実装（stage runner）** | **未実装**（下記「残っている作業」） |
+
+### 残っている作業
+
+`pipeline` の枠組みと各工程の部品（`frame_extractor` / `vlm_client` /
+`asr_engine` / `description_builder`）は揃っているが、**両者を繋ぐ
+stage runner の実装が残っている**。具体的には次の 4 つ。
+
+| 実装するもの | 使う部品 | 台帳へ書くもの |
+|---|---|---|
+| `stages/frames.py` | `frame_extractor` | `frame_extraction_runs` / `extracted_frames` |
+| `stages/visual.py` | `vlm_client` + プロンプト | `visual_analysis_runs` / `frame_visual_analyses` / `asset_visual_summaries` |
+| `stages/transcription.py` | `asr_engine` + `transcript_schemas` | `asr_runs` / `asr_chunks` / `transcripts` / `transcript_segments` |
+| `stages/description.py` | `description_builder` + `vlm_client` | `asset_descriptions` |
+
+これらは**再利用キーの照合（Resume）と失敗種別の判定**を担う。
+判定規則そのものは `database` と `pipeline` に既にあるので、
+各工程は「部品を呼び、結果を台帳へ書き、`StageOutcome` を返す」だけになる。

@@ -861,6 +861,54 @@ class CatalogDatabase:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    # -- 書き込みの共通処理 ------------------------------------------------
+
+    def _upsert(
+        self,
+        table: str,
+        allowed: tuple[str, ...],
+        payload: dict[str, Any],
+        *,
+        conflict: tuple[str, ...],
+        required: tuple[str, ...] = (),
+        immutable: tuple[str, ...] = (),
+    ) -> None:
+        """**渡された列だけ**を書く upsert。
+
+        全列を並べて未指定へ NULL を入れると、``NOT NULL DEFAULT 0`` の
+        件数系の列が既定値を受け取れず、``IntegrityError`` になる。
+        部分的な更新も自然に書けるようになる。
+
+        SQLite は ON CONFLICT で更新へ回る前に、挿入しようとした行の
+        NOT NULL を検査する。既存行の更新であっても ``required`` の列は
+        省略できないので、分かる言葉で先に止める。
+
+        Args:
+            allowed:   このテーブルで受け付ける列
+            conflict:  一意制約を構成する列
+            required:  省略できない列
+            immutable: 既存行では更新しない列（``created_at`` など）
+        """
+        unknown = set(payload) - set(allowed)
+        if unknown:
+            raise ValueError(f"{table} に無い列です: {sorted(unknown)}")
+        missing = [name for name in required if payload.get(name) is None]
+        if missing:
+            raise ValueError(f"{table} には {missing} が必要です。")
+
+        columns = [name for name in allowed if name in payload]
+        if not columns:
+            return
+        updatable = [name for name in columns if name not in immutable
+                     and name not in conflict]
+        updates = ",".join(f"{name} = excluded.{name}" for name in updatable)
+        statement = (
+            f"INSERT INTO {table} ({','.join(columns)}) "
+            f"VALUES ({','.join('?' for _ in columns)}) "
+            f"ON CONFLICT({','.join(conflict)}) "
+            + (f"DO UPDATE SET {updates}" if updates else "DO NOTHING"))
+        self.connection.execute(statement, [payload[name] for name in columns])
+
     # -- 識別子 ------------------------------------------------------------
 
     def next_catalog_id(self) -> str:
@@ -1043,25 +1091,14 @@ class CatalogDatabase:
         省略できない。省略されたら分かる言葉で止める。
         """
         payload = dict(values)
-        unknown = set(payload) - set(self.PROBE_COLUMNS)
-        if unknown:
-            raise ValueError(f"probe_results に無い列です: {sorted(unknown)}")
-        if not payload.get("probe_status"):
-            raise ValueError("probe_status は必須です。")
-
         if "raw_probe_cache_path" in payload:
             payload["raw_probe_cache_path"] = store_internal_path(
                 payload["raw_probe_cache_path"])
 
-        columns = [c for c in self.PROBE_COLUMNS if c in payload]
-
-        placeholders = ",".join("?" for _ in range(len(columns) + 1))
-        updates = ",".join(f"{c} = excluded.{c}" for c in columns)
-        self.connection.execute(
-            f"INSERT INTO probe_results (asset_id, {','.join(columns)}) "
-            f"VALUES ({placeholders}) "
-            f"ON CONFLICT(asset_id) DO UPDATE SET {updates}",
-            [asset_id] + [payload[c] for c in columns])
+        payload["asset_id"] = asset_id
+        self._upsert("probe_results", ("asset_id", *self.PROBE_COLUMNS),
+                     payload, conflict=("asset_id",),
+                     required=("asset_id", "probe_status"))
 
     def get_probe_result(self, asset_id: str) -> sqlite3.Row | None:
         return self.connection.execute(
@@ -1495,15 +1532,12 @@ class CatalogDatabase:
         payload = dict(values)
         payload["result_file_path"] = store_internal_path(
             payload.get("result_file_path"))
-        columns = list(self.FRAME_ANALYSIS_COLUMNS)
-        updatable = [c for c in columns if c != "created_at"]
-        updates = ",".join(f"{c} = excluded.{c}" for c in updatable)
-        self.connection.execute(
-            f"INSERT INTO frame_visual_analyses ({','.join(columns)}) "
-            f"VALUES ({','.join('?' for _ in columns)}) "
-            f"ON CONFLICT(asset_id, frame_sha256, model_id, prompt_version, "
-            f"implementation_version, config_hash) DO UPDATE SET {updates}",
-            [payload.get(c) for c in columns])
+        self._upsert(
+            "frame_visual_analyses", self.FRAME_ANALYSIS_COLUMNS, payload,
+            conflict=("asset_id", "frame_sha256", "model_id", "prompt_version",
+                      "implementation_version", "config_hash"),
+            required=("asset_id", "analysis_status", "created_at"),
+            immutable=("created_at",))
 
     def get_frame_analyses_for_run(self, visual_run_id: str) -> list[sqlite3.Row]:
         return list(self.connection.execute(
@@ -1546,16 +1580,13 @@ class CatalogDatabase:
         payload = dict(values)
         payload["result_file_path"] = store_internal_path(
             payload.get("result_file_path"))
-        columns = list(self.VISUAL_SUMMARY_COLUMNS)
-        updatable = [c for c in columns if c != "created_at"]
-        updates = ",".join(f"{c} = excluded.{c}" for c in updatable)
-        self.connection.execute(
-            f"INSERT INTO asset_visual_summaries ({','.join(columns)}) "
-            f"VALUES ({','.join('?' for _ in columns)}) "
-            f"ON CONFLICT(asset_id, source_frame_analysis_hash, model_id, "
-            f"prompt_version, implementation_version, config_hash) "
-            f"DO UPDATE SET {updates}",
-            [payload.get(c) for c in columns])
+        self._upsert(
+            "asset_visual_summaries", self.VISUAL_SUMMARY_COLUMNS, payload,
+            conflict=("asset_id", "source_frame_analysis_hash", "model_id",
+                      "prompt_version", "implementation_version",
+                      "config_hash"),
+            required=("asset_id", "summary_status", "created_at"),
+            immutable=("created_at",))
 
     def get_latest_visual_summary(self, asset_id: str) -> sqlite3.Row | None:
         """最後に成功した視覚概要。設定ハッシュは問わない。"""
@@ -1649,17 +1680,15 @@ class CatalogDatabase:
         payload = dict(values)
         payload["result_file_path"] = store_internal_path(
             payload.get("result_file_path"))
-        columns = list(self.ASR_CHUNK_COLUMNS)
-        updatable = [c for c in columns if c != "created_at"]
-        updates = ",".join(f"{c} = excluded.{c}" for c in updatable)
-        self.connection.execute(
-            f"INSERT INTO asr_chunks ({','.join(columns)}) "
-            f"VALUES ({','.join('?' for _ in columns)}) "
-            f"ON CONFLICT(asset_id, source_quick_fingerprint, "
-            f"primary_audio_stream_index, chunk_index, absolute_start_seconds, "
-            f"duration_seconds, engine_name, implementation_version, "
-            f"model_sha256, config_hash) DO UPDATE SET {updates}",
-            [payload.get(c) for c in columns])
+        self._upsert(
+            "asr_chunks", self.ASR_CHUNK_COLUMNS, payload,
+            conflict=("asset_id", "source_quick_fingerprint",
+                      "primary_audio_stream_index", "chunk_index",
+                      "absolute_start_seconds", "duration_seconds",
+                      "engine_name", "implementation_version", "model_sha256",
+                      "config_hash"),
+            required=("asset_id", "chunk_status", "created_at"),
+            immutable=("created_at",))
 
     TRANSCRIPT_COLUMNS = (
         "asr_run_id", "asset_id", "catalog_id", "implementation_version",
@@ -1677,17 +1706,15 @@ class CatalogDatabase:
         payload = dict(values)
         payload["result_file_path"] = store_internal_path(
             payload.get("result_file_path"))
-        columns = list(self.TRANSCRIPT_COLUMNS)
-        updatable = [c for c in columns if c != "created_at"]
-        updates = ",".join(f"{c} = excluded.{c}" for c in updatable)
-        self.connection.execute(
-            f"INSERT INTO transcripts ({','.join(columns)}) "
-            f"VALUES ({','.join('?' for _ in columns)}) "
-            f"ON CONFLICT(asset_id, source_quick_fingerprint, "
-            f"primary_audio_stream_index, scope_type, scope_start_seconds, "
-            f"scope_duration_seconds, engine_name, implementation_version, "
-            f"model_sha256, config_hash) DO UPDATE SET {updates}",
-            [payload.get(c) for c in columns])
+        self._upsert(
+            "transcripts", self.TRANSCRIPT_COLUMNS, payload,
+            conflict=("asset_id", "source_quick_fingerprint",
+                      "primary_audio_stream_index", "scope_type",
+                      "scope_start_seconds", "scope_duration_seconds",
+                      "engine_name", "implementation_version", "model_sha256",
+                      "config_hash"),
+            required=("asset_id", "transcript_status", "created_at"),
+            immutable=("created_at",))
         row = self.connection.execute(
             """
             SELECT transcript_id FROM transcripts
@@ -1759,14 +1786,12 @@ class CatalogDatabase:
         payload = dict(values)
         payload["description_file_path"] = store_internal_path(
             payload.get("description_file_path"))
-        columns = list(self.DESCRIPTION_COLUMNS)
-        updatable = [c for c in columns if c not in ("asset_id", "created_at")]
-        updates = ",".join(f"{c} = excluded.{c}" for c in updatable)
-        self.connection.execute(
-            f"INSERT INTO asset_descriptions ({','.join(columns)}) "
-            f"VALUES ({','.join('?' for _ in columns)}) "
-            f"ON CONFLICT(asset_id) DO UPDATE SET {updates}",
-            [payload.get(c) for c in columns])
+        self._upsert(
+            "asset_descriptions", self.DESCRIPTION_COLUMNS, payload,
+            conflict=("asset_id",),
+            required=("asset_id", "description_file_path",
+                      "description_status", "created_at"),
+            immutable=("created_at",))
 
     def get_description(self, asset_id: str) -> sqlite3.Row | None:
         return self.connection.execute(
