@@ -181,6 +181,19 @@ def make_synthetic_video(
             and target.stat().st_size > 0)
 
 
+def quiet_logger(log_dir: Path, run_id: str):
+    """テスト用のログ。**ファイルへは書くが、コンソールへは出さない。**
+
+    テスト出力の中に本番の進捗表示が混ざると、失敗の位置が見えなくなる。
+    ログの内容そのものを検証したいときは text_log_path を読む。
+    """
+    import logging
+
+    from local_video_catalog.logging_utils import RunLogger
+
+    return RunLogger(log_dir, run_id, console_level=logging.CRITICAL + 1)
+
+
 def file_state(path: Path) -> tuple[int, int, bytes]:
     """元動画が変更されていないことを確かめるための状態。
 
