@@ -46,19 +46,30 @@ def build_command(module: str, arguments: list[str]) -> list[str]:
     return [python_executable(), "-X", "utf8", "-m", module, *arguments]
 
 
+def package_source_root() -> Path:
+    """**いま動いているパッケージ**が置かれているフォルダー。
+
+    APP_ROOT から ``src`` を組み立てない。APP_ROOT はテストや検証で
+    差し替えられるうえ、将来 zip 化などで配置が変わりうる。
+    子プロセスには「親と同じパッケージ」を読ませたい。
+    """
+    import local_video_catalog
+
+    return Path(local_video_catalog.__file__).resolve().parents[1]
+
+
 def child_environment() -> dict[str, str]:
     """子プロセスの環境変数。
 
     **UTF-8 を明示する。** 明示しないと日本語 Windows で出力が
     CP932 として復号され、画面のログが文字化けする。
-    ``PYTHONPATH`` は配布物の ``src`` を指す。
     """
     env = child_process_environment()
-    source_root = paths.app_root() / "src"
+    separator = ";" if sys.platform == "win32" else ":"
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (f"{source_root}{'' if not existing else ';' + existing}"
-                         if sys.platform == "win32"
-                         else f"{source_root}{'' if not existing else ':' + existing}")
+    source_root = str(package_source_root())
+    env["PYTHONPATH"] = (source_root if not existing
+                         else f"{source_root}{separator}{existing}")
     return env
 
 

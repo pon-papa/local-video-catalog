@@ -164,9 +164,20 @@ class ChildProcessTests(TempAppRootTestCase):
         self.assertEqual(env["PYTHONUTF8"], "1")
         self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
 
-    def test_source_directory_is_on_the_path(self) -> None:
+    def test_child_imports_the_same_package_as_the_parent(self) -> None:
+        """**APP_ROOT から src を組み立てない。**
+
+        APP_ROOT は差し替えられる。子には親と同じパッケージを読ませる。
+        """
+        import local_video_catalog
+
         env = gui_runner.child_environment()
-        self.assertIn(str(paths.app_root() / "src"), env["PYTHONPATH"])
+        expected = Path(local_video_catalog.__file__).resolve().parents[1]
+        self.assertIn(str(expected), env["PYTHONPATH"])
+
+    def test_path_survives_an_overridden_app_root(self) -> None:
+        env = gui_runner.child_environment()
+        self.assertNotEqual(env["PYTHONPATH"], str(paths.app_root() / "src"))
 
     def test_command_uses_the_running_interpreter(self) -> None:
         """python.exe を探し回らない。画面が動いている Python を使う。"""

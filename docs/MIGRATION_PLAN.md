@@ -399,32 +399,27 @@ Phase 0 (安全基盤) ──┐
 | 5 ローカル AI | 完了 | `8544d02` |
 | 6 pipeline + 機能パリティ表 | 完了 | `c047d3e` |
 | 7 GUI（Python + tkinter） | 完了 | `b1ce65a` |
-| 8 配布・移動耐性・受け入れ準備 | **一部完了** | 下記 |
+| 8 配布・移動耐性・受け入れ | 完了 | `a3a0775` / `726a054` / `9ec9b1a` |
+| — stage runner 4 本 | 完了 | `726a054` |
 
 ### Phase 8 の内訳
 
 | 項目 | 状態 |
 |---|---|
+| stage runner 4 本（frames / visual / transcription / description） | 完了 |
 | フォルダー移動テスト（再解析が起きないこと） | 完了・自動テスト |
 | 残骸ゼロ確認（`%LOCALAPPDATA%` 等を使わないこと） | 完了・自動テスト |
 | `tools/make_release.py`（配布 zip） | 完了 |
-| 配布物の展開と起動確認 | 完了（別フォルダーで環境チェックが動作） |
-| **実動画での通し確認** | **未実施**（開発クローンでは実動画を使わない方針のため、利用者が運用フォルダーで行う） |
-| **各工程を台帳へ結びつける実装（stage runner）** | **未実装**（下記「残っている作業」） |
+| 配布物の展開・APP_ROOT 解決・環境チェック | 完了 |
+| **配布フォルダーでの合成動画による通し試験** | 完了（登録→解析→停止→Resume→説明文→カタログ→整理→移動） |
+| GUI から pipeline 全工程が起動すること | 完了・自動テスト |
+| Python runtime の配布方式 | 比較・推奨まで完了（[PYTHON_RUNTIME.md](PYTHON_RUNTIME.md)） |
+| **実動画での確認** | **未実施**（方針どおり。利用者が運用フォルダーで行う） |
 
-### 残っている作業
+### v1 として未完了な点
 
-`pipeline` の枠組みと各工程の部品（`frame_extractor` / `vlm_client` /
-`asr_engine` / `description_builder`）は揃っているが、**両者を繋ぐ
-stage runner の実装が残っている**。具体的には次の 4 つ。
-
-| 実装するもの | 使う部品 | 台帳へ書くもの |
-|---|---|---|
-| `stages/frames.py` | `frame_extractor` | `frame_extraction_runs` / `extracted_frames` |
-| `stages/visual.py` | `vlm_client` + プロンプト | `visual_analysis_runs` / `frame_visual_analyses` / `asset_visual_summaries` |
-| `stages/transcription.py` | `asr_engine` + `transcript_schemas` | `asr_runs` / `asr_chunks` / `transcripts` / `transcript_segments` |
-| `stages/description.py` | `description_builder` + `vlm_client` | `asset_descriptions` |
-
-これらは**再利用キーの照合（Resume）と失敗種別の判定**を担う。
-判定規則そのものは `database` と `pipeline` に既にあるので、
-各工程は「部品を呼び、結果を台帳へ書き、`StageOutcome` を返す」だけになる。
+| 項目 | 状態 |
+|---|---|
+| 文字起こしの通し試験 | 合成動画に発話が無く、Whisper モデルも要るため end-to-end からは外している。エンジン側（チャンク分割・非 ASCII 回避・幻覚判定・VAD 既定）は単体テストで固定済み |
+| Python runtime の同梱 | 方式は決めた（embeddable package）。実装は未着手 |
+| 実動画での長時間運転 | 未実施 |
