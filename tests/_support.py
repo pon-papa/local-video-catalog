@@ -86,7 +86,11 @@ class TempDirTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self._temp = tempfile.TemporaryDirectory(prefix="lvc_test_")
+        # 子プロセスを起動するテストでは、こちらが片付けている最中に
+        # 相手が __pycache__ を書くことがある。片付けの失敗でテストを
+        # 落とさない（一時フォルダーは OS が後で回収する）。
+        self._temp = tempfile.TemporaryDirectory(
+            prefix="lvc_test_", ignore_cleanup_errors=True)
         self.temp_dir = Path(self._temp.name)
         self.addCleanup(self._temp.cleanup)
 

@@ -31,7 +31,7 @@ from typing import Any, Callable, Protocol
 from . import APPLICATION_VERSION
 from . import config as config_module
 from . import database as db_module
-from . import paths, recycle, register, stage_report
+from . import paths, recycle, register, selection, stage_report
 from .logging_utils import RunLogger, configure_stdio_utf8, local_now_iso, new_run_id
 
 EXIT_OK = 0
@@ -256,8 +256,13 @@ def run_pipeline(
     skip_stages: frozenset[str] = frozenset(),
     consecutive_failure_limit: int = 3,
     recycle_cache: bool = False,
+    plan: "selection.SelectionPlan | None" = None,
 ) -> PipelineResult:
-    """動画ごとに工程を進める。**止めどきの判断はここに集約する。**"""
+    """動画ごとに工程を進める。**止めどきの判断はここに集約する。**
+
+    ``plan`` があれば、1 本ごとに「いま何本目を、なぜ処理しているか」を
+    書き出す。利用者が経過を追えるようにするため。
+    """
     result = PipelineResult(planned=len(targets))
     guard = _FailureGuard(consecutive_failure_limit)
 
@@ -271,9 +276,13 @@ def run_pipeline(
 
         result.processed += 1
         context.logger.info("")
-        context.logger.info(
-            f"{target.catalog_id}  [{result.processed}/{len(targets)}]  "
-            f"{target.file_name}")
+        if plan is not None:
+            for line in plan.progress_line(result.processed):
+                context.logger.info(line)
+        else:
+            context.logger.info(
+                f"{target.catalog_id}  [{result.processed}/{len(targets)}]  "
+                f"{target.file_name}")
 
         stopped, completed = _run_one(
             target, context, runners, result, guard, skip_stages=skip_stages)
@@ -488,12 +497,26 @@ def run(args: argparse.Namespace,
                 only_catalog_ids=tuple(args.only_catalog_id or ()))
             targets = stage_report.select_pending(report, max_videos=max_videos)
 
+            # **選んだ結果と理由を、利用者にも記録にも残す。**
+            # 「329 本あるのに、なぜこの 3 本？」に答えられるようにする。
+            plan = selection.build_plan(
+                database, source_root=str(source_root), ignored_stages=skip,
+                only_catalog_ids=tuple(args.only_catalog_id or ()),
+                max_videos=max_videos)
+
             logger.info("")
-            for line in stage_report.format_summary(
-                    report, found_count=summary.discovered):
+            for line in plan.summary_lines():
                 logger.info(line)
+            for line in plan.detail_lines():
+                logger.info(line)
+            logger.event("selection_plan", **plan.to_dict())
 
             if args.dry_run:
+                logger.info("")
+                logger.info("※ 本数の上限は、映像の解析・文字起こし・説明文まで"
+                            "進める動画の数です。")
+                logger.info("　 動画ライブラリ全体の確認は毎回行います"
+                            "（すでに確認済みの動画はすぐ終わります）。")
                 logger.info("")
                 logger.info("[予定のみ] 台帳も結果ファイルも変更していません。")
                 return EXIT_OK
@@ -512,7 +535,7 @@ def run(args: argparse.Namespace,
             result = run_pipeline(
                 context, targets, runners or default_runners(),
                 skip_stages=skip, consecutive_failure_limit=limit,
-                recycle_cache=recycle_cache)
+                recycle_cache=recycle_cache, plan=plan)
 
             if max_videos and result.stop_reason == STOP_FINISHED \
                     and result.processed >= max_videos:

@@ -100,7 +100,7 @@ def register_folder(
         min_size_bytes=settings.min_size_bytes,
         follow_symlinks=settings.follow_symlinks))
     summary.discovered = len(found_files)
-    logger.info(f"列挙完了: {summary.discovered} 本")
+    logger.info(f"動画ライブラリの確認: {summary.discovered} 本が見つかりました")
     logger.event("discovery_finished", count=summary.discovered)
 
     if dry_run:
@@ -136,7 +136,11 @@ def register_folder(
                 summary.failed += 1
 
             if index % 25 == 0 or index == summary.discovered:
-                logger.info(f"  {index}/{summary.discovered} 本")
+                # **「解析」ではなく「ライブラリの確認」だと分かる言い方にする。**
+                # 上限 3 本を指定した利用者が「329 本処理している」と
+                # 誤解しないため。
+                logger.info(f"  動画ライブラリを確認しています: "
+                            f"{index} / {summary.discovered} 本")
 
     # このフォルダーに属していたのに今回見つからなかったもの
     known = database.list_assets_under(source_root)

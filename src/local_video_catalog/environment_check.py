@@ -57,6 +57,60 @@ class CheckItem:
                 "detail": self.detail, "advice": self.advice}
 
 
+ESSENTIAL_FOR_ANALYSIS = ("ffmpeg", "ffprobe")
+"""これが無いと、新しい解析を始められない。"""
+
+NEEDED_FOR_VISUAL = ("ローカルAI", "映像解析モデル")
+NEEDED_FOR_TRANSCRIPTION = ("whisper 機能", "文字起こしモデル")
+
+
+@dataclass
+class Capabilities:
+    """**いま何ができて、何ができないか。**
+
+    単なる OK/NG ではなく、利用者が次に何をすればよいか分かるようにする。
+    LM Studio が止まっていても、カタログを見ることはできる。
+    """
+
+    can_register: bool = False
+    can_analyse_visual: bool = False
+    can_transcribe: bool = False
+    can_browse: bool = True
+    blockers: list[str] = field(default_factory=list)
+
+    @property
+    def can_start(self) -> bool:
+        """「処理開始」を押してよいか。
+
+        映像解析や文字起こしは飛ばせるので、**登録さえできれば始められる。**
+        """
+        return self.can_register
+
+    def summary_lines(self) -> list[str]:
+        lines: list[str] = []
+        if self.can_register and self.can_analyse_visual and self.can_transcribe:
+            lines.append("解析を開始できます。")
+            return lines
+
+        if not self.can_register:
+            lines.append("新しい解析を開始できません。")
+            lines.append("ffmpeg と ffprobe の場所を指定してください。")
+        else:
+            missing = []
+            if not self.can_analyse_visual:
+                missing.append("映像の解析")
+            if not self.can_transcribe:
+                missing.append("文字起こし")
+            lines.append(f"{'と'.join(missing)}はできません。"
+                         "それ以外は開始できます。")
+            for blocker in self.blockers:
+                lines.append(f"  → {blocker}")
+        lines.append("")
+        lines.append("動画ライブラリの確認、HTMLカタログの閲覧、"
+                     "説明文の確認はいつでもできます。")
+        return lines
+
+
 @dataclass
 class CheckResult:
     items: list[CheckItem] = field(default_factory=list)
@@ -77,11 +131,47 @@ class CheckResult:
     def blocking(self) -> list[CheckItem]:
         return [i for i in self.items if i.level == LEVEL_NG]
 
+    def find(self, name: str) -> CheckItem | None:
+        for item in self.items:
+            if item.name == name:
+                return item
+        return None
+
+    def is_ok(self, name: str) -> bool:
+        item = self.find(name)
+        return item is not None and item.level == LEVEL_OK
+
+    def capabilities(self) -> Capabilities:
+        """**いま何ができるか**へ翻訳する。"""
+        found = Capabilities()
+        found.can_register = all(self.is_ok(name)
+                                 for name in ESSENTIAL_FOR_ANALYSIS)
+        found.can_analyse_visual = all(self.is_ok(name)
+                                       for name in NEEDED_FOR_VISUAL)
+        found.can_transcribe = all(self.is_ok(name)
+                                   for name in NEEDED_FOR_TRANSCRIPTION)
+
+        for name in (*ESSENTIAL_FOR_ANALYSIS, *NEEDED_FOR_VISUAL,
+                     *NEEDED_FOR_TRANSCRIPTION):
+            item = self.find(name)
+            if item is not None and item.level != LEVEL_OK and item.advice:
+                if item.advice not in found.blockers:
+                    found.blockers.append(item.advice)
+        return found
+
     def to_dict(self) -> dict[str, Any]:
+        capabilities = self.capabilities()
         return {
             "level": self.level, "ok": self.level != LEVEL_NG,
             "items": [i.to_dict() for i in self.items],
             "blocking": [i.to_dict() for i in self.blocking],
+            "capabilities": {
+                "can_register": capabilities.can_register,
+                "can_analyse_visual": capabilities.can_analyse_visual,
+                "can_transcribe": capabilities.can_transcribe,
+                "can_start": capabilities.can_start,
+                "blockers": list(capabilities.blockers),
+            },
         }
 
 
@@ -287,14 +377,18 @@ def pad(text: str, width: int) -> str:
     return text + " " * max(0, width - display_width(text))
 
 
+MARKS = {LEVEL_OK: "✓", LEVEL_WARN: "–", LEVEL_NG: "✕"}
+"""行頭の記号。OK / 注意 / NG を一目で分かるようにする。"""
+
+
 def format_lines(result: CheckResult) -> list[str]:
     width = max((display_width(i.name) for i in result.items), default=10)
     lines = []
     for item in result.items:
-        lines.append(f"{pad(item.name, width)}  {pad(item.level, 6)}"
-                     f"{item.detail}".rstrip())
+        mark = MARKS.get(item.level, " ")
+        lines.append(f"{mark} {pad(item.name, width)}  {item.detail}".rstrip())
         if item.advice and item.level != LEVEL_OK:
-            lines.append(f"{' ' * width}      → {item.advice}")
+            lines.append(f"  {' ' * width}  → {item.advice}")
     return lines
 
 
@@ -332,15 +426,14 @@ def run(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False))
     else:
+        print("環境チェック完了")
+        print("")
         for line in format_lines(result):
             print(line)
         print("")
-        if result.level == LEVEL_NG:
-            print("このままでは処理を開始できません。上の NG を直してください。")
-        elif result.level == LEVEL_WARN:
-            print("注意はありますが、処理は開始できます。")
-        else:
-            print("すべて問題ありません。")
+        # **OK / NG だけでなく「いま何ができるか」を書く。**
+        for line in result.capabilities().summary_lines():
+            print(line)
 
     return EXIT_NG if result.level == LEVEL_NG else EXIT_OK
 

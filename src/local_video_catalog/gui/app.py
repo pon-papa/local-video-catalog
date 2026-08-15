@@ -15,7 +15,10 @@
 
 from __future__ import annotations
 
+import json
+import queue
 import sys
+import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -43,6 +46,9 @@ class CatalogWindow:
     def __init__(self) -> None:
         self.state = state_module.load()
         self.task: runner_module.BackgroundTask | None = None
+        self.capabilities: dict[str, object] | None = None
+        self._environment_queue: "queue.Queue[runner_module.TaskResult]" = (
+            queue.Queue())
 
         self.root = tk.Tk()
         self.root.title(WINDOW_TITLE)
@@ -52,6 +58,10 @@ class CatalogWindow:
         self._build()
         self._apply_state()
         self._set_running(False)
+
+        # **起動したら自動で環境を確かめる。** 毎回ボタンを押させない。
+        # 画面を止めないよう別スレッドで行い、終わったら表示を更新する。
+        self._start_environment_check(automatic=True)
 
     # -- 組み立て ---------------------------------------------------------
 
@@ -199,8 +209,14 @@ class CatalogWindow:
 
     def _set_running(self, running: bool) -> None:
         for button in (self.button_env, self.button_preview,
-                       self.button_start, self.button_retry):
+                       self.button_retry):
             button.configure(state="disabled" if running else "normal")
+        # **新しい解析ができない環境では、開始だけを無効にする。**
+        # 閲覧や設定は止めない。
+        can_start = (self.capabilities is None
+                     or bool(self.capabilities.get("can_start", True)))
+        self.button_start.configure(
+            state="disabled" if (running or not can_start) else "normal")
         self.button_stop.configure(state="normal" if running else "disabled")
         if running:
             self.progress.start(30)
@@ -233,27 +249,109 @@ class CatalogWindow:
         return False
 
     def _check_environment(self) -> None:
+        """手動の「環境チェック」。設定を変えた後の再確認に使う。"""
+        self._start_environment_check(automatic=False)
+
+    def _start_environment_check(self, *, automatic: bool) -> None:
+        """環境チェックを**別スレッドで**動かす。
+
+        LM Studio への接続や外部プログラムの確認は時間がかかることが
+        あるため、画面スレッドで待たない。終わるまで「確認しています」と
+        出し、結果が届いたら書き換える。
+        """
         state = self._collect_state()
         self._clear_log()
-        self.status_var.set("環境を確認しています…")
-        self.root.update_idletasks()
+        self.status_var.set("環境を確認しています……")
+        self.button_env.configure(state="disabled")
+        self.button_start.configure(state="disabled")
 
-        arguments = []
+        arguments = ["--json"]
         if state.source_folder:
             arguments += ["--source-folder", state.source_folder]
-        if state.skip_visual_analysis:
-            arguments.append("--skip-visual")
-        if state.skip_transcription:
-            arguments.append("--skip-transcription")
+        if automatic:
+            # 起動を待たせないよう、時間のかかる確認は省く。
+            arguments.append("--quick")
 
-        result = runner_module.check_environment(arguments)
-        for line in result.lines:
-            self._append(line)
-        if result.exit_code == 0:
-            self.status_var.set("環境の確認が終わりました。")
+        def work() -> None:
+            self._environment_queue.put(
+                runner_module.check_environment(arguments))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(POLL_INTERVAL_MS, self._poll_environment)
+
+    def _poll_environment(self) -> None:
+        try:
+            result = self._environment_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(POLL_INTERVAL_MS, self._poll_environment)
+            return
+
+        self.button_env.configure(state="normal")
+        payload: dict[str, object] = {}
+        try:
+            payload = json.loads(result.text.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            pass
+
+        if not payload:
+            self._append("環境を確認できませんでした。")
+            for line in result.lines[-10:]:
+                self._append(line)
+            self.status_var.set("環境を確認できませんでした。")
+            self.button_start.configure(state="normal")
+            return
+
+        self._show_environment(payload)
+
+    def _show_environment(self, payload: dict) -> None:
+        """確認結果を、一般利用者に分かる形で見せる。"""
+        from ..environment_check import LEVEL_OK, MARKS
+
+        self._append("環境チェック完了")
+        self._append("")
+        width = max((len(str(item["name"])) for item in payload["items"]),
+                    default=10)
+        for item in payload["items"]:
+            mark = MARKS.get(str(item["level"]), " ")
+            self._append(f"{mark} {str(item['name']).ljust(width)}  "
+                         f"{item['detail']}".rstrip())
+            if item["advice"] and item["level"] != LEVEL_OK:
+                self._append(f"    → {item['advice']}")
+
+        capabilities = dict(payload.get("capabilities") or {})
+        self.capabilities = capabilities
+        self._append("")
+
+        if capabilities.get("can_start"):
+            if (capabilities.get("can_analyse_visual")
+                    and capabilities.get("can_transcribe")):
+                self._append("解析を開始できます。")
+                self.status_var.set("解析を開始できます。")
+            else:
+                missing = []
+                if not capabilities.get("can_analyse_visual"):
+                    missing.append("映像の解析")
+                if not capabilities.get("can_transcribe"):
+                    missing.append("文字起こし")
+                message = f"{'と'.join(missing)}はできません。"
+                self._append(message + "それ以外は開始できます。")
+                for blocker in capabilities.get("blockers", []):
+                    self._append(f"  → {blocker}")
+                self._append("")
+                self._append("動画ライブラリの確認、HTMLカタログの閲覧、"
+                             "説明文の確認はいつでもできます。")
+                self.status_var.set(message)
+            self.button_start.configure(state="normal")
         else:
+            self._append("新しい解析を開始できません。")
+            for blocker in capabilities.get("blockers", []):
+                self._append(f"  → {blocker}")
+            self._append("")
+            self._append("HTMLカタログの閲覧や説明文の確認はできます。")
             self.status_var.set(
-                "このままでは処理を開始できません。上の NG を直してください。")
+                "新しい解析を開始できません。上の項目を直してください。")
+            # **閲覧までは止めない。** 開始だけを無効にする。
+            self.button_start.configure(state="disabled")
 
     def _preview(self) -> None:
         if not self._require_source():
@@ -265,8 +363,28 @@ class CatalogWindow:
         result = runner_module.preview_targets(state.pipeline_arguments())
         for line in result.lines:
             self._append(line)
-        self.status_var.set(
-            "対象確認が終わりました。よければ「処理開始」を押してください。")
+
+        # 状況説明欄にも要点を出す。ログを読まなくても分かるように。
+        planned = self._planned_count(result.lines)
+        if planned is None:
+            self.status_var.set("対象確認が終わりました。")
+        elif planned == 0:
+            self.status_var.set("今回解析する動画はありません（すべて完了済み）。")
+        else:
+            self.status_var.set(
+                f"今回解析する動画: {planned} 本。"
+                "内訳は下のログを確認してください。"
+                "よければ「処理開始」を押してください。")
+
+    @staticmethod
+    def _planned_count(lines: list[str]) -> int | None:
+        """出力から「今回解析する」本数を読む。"""
+        for line in lines:
+            if line.startswith("今回解析する"):
+                digits = "".join(ch for ch in line if ch.isdigit())
+                if digits:
+                    return int(digits)
+        return None
 
     def _start(self, extra: list[str] | None = None) -> None:
         if not self._require_source():
@@ -295,12 +413,14 @@ class CatalogWindow:
             return
         for line in self.task.drain():
             self._append(line)
+            self._update_status_from(line)
         if self.task.running:
             self.root.after(POLL_INTERVAL_MS, self._poll)
             return
 
         for line in self.task.drain():
             self._append(line)
+            self._update_status_from(line)
         self._set_running(False)
         code = self.task.result.exit_code
         if code == 0:
@@ -308,6 +428,22 @@ class CatalogWindow:
         else:
             self.status_var.set(
                 "一部の処理が終わりませんでした。ログを確認してください。")
+
+    def _update_status_from(self, line: str) -> None:
+        """解析本体の出力から、状況説明欄を更新する。
+
+        **利用者が「いま何をしているのか」をログを読まずに分かるように。**
+        pipeline 側が決めた言い回しをそのまま拾う。
+        """
+        text = line.strip()
+        if text.startswith("動画ライブラリを確認しています"):
+            self.status_var.set(text + "（解析ではなく一覧の確認です）")
+        elif text.startswith("現在:"):
+            self._current_video_line = text
+            self.status_var.set(text)
+        elif text.startswith("VID-") and getattr(
+                self, "_current_video_line", ""):
+            self.status_var.set(f"{self._current_video_line}  {text}")
 
     def _stop(self) -> None:
         if self.task is None:
