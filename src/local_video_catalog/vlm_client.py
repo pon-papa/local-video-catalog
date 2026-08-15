@@ -175,6 +175,17 @@ class VlmSettings:
     変更しても保存済みの解析はそのまま再利用できる。
     """
 
+    vision_probe_timeout_seconds: int = 120
+    """画像入力を確かめる 1 回だけの待ち時間。
+
+    送るのは 8×8 の画像 1 枚で生成も 16 トークンだが、**LM Studio が
+    そのモデルを読み込むところから始まる**ことがある。実測で 56.7 秒
+    かかった例があり、短くすると「非対応」を「確認できませんでした」と
+    誤って報告する（詳細は ``vision_probe`` の docstring）。
+
+    **この値も config_hash に含めない。** 生成内容を変えないため。
+    """
+
     maximum_concurrent_requests: int = 1
 
     def validate(self) -> None:
@@ -220,6 +231,9 @@ class VlmSettings:
             summary_timeout_seconds=int(section.get(
                 "summary_timeout_seconds",
                 max(cls.summary_timeout_seconds, frame_timeout))),
+            vision_probe_timeout_seconds=int(section.get(
+                "vision_probe_timeout_seconds",
+                cls.vision_probe_timeout_seconds)),
             maximum_concurrent_requests=int(section.get(
                 "maximum_concurrent_requests", 1)),
         )

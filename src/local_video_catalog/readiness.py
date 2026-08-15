@@ -12,10 +12,20 @@ v1 の考え方:
 
     登録・基本情報   ffprobe
     代表画像の抽出   ffmpeg
-    映像の解析       LM Studio ＋ 映像解析モデル      ← **必須**
-    文字起こし       ffmpeg ＋ whisper 機能 ＋ モデル ← 飛ばせる
+    映像の解析       LM Studio ＋ 選択済みモデル ＋ **画像入力の実証** ← 必須
+    文字起こし       ffmpeg ＋ whisper 機能 ＋ モデル               ← 飛ばせる
     説明文の作成     LM Studio があれば使う
     HTMLカタログ     説明文ファイルだけ
+
+**「LM Studio が起動している」＝「映像を解析できる」ではない。**
+接続できても、モデルが選ばれていない／選んだモデルが今は無い／
+そのモデルが画像を受け取れない、のどれでも解析はできない。
+だから開始条件は 4 段に分ける。
+
+    1. LM Studio へ接続できる
+    2. 使うモデルが選ばれている
+    3. 選んだモデルが今も利用できる
+    4. そのモデルが実際に画像入力を処理できた（``vision_probe``）
 
 映像の解析を飛ばす選択肢は画面に出さない。飛ばすと説明文が定型文だけに
 なり、このツールを使う意味がほとんど残らないため。
@@ -31,6 +41,10 @@ v1 の考え方:
 
 **未確認を「利用不可」として扱わない。** 確認前に「できません」と
 言い切ると、実際には動く環境で開始を止めてしまう。
+
+**ただし画像入力だけは例外。** 「確かめられなかった」まま解析を始めると、
+全ての動画が映像解析で失敗して長時間を捨てることになる。ここだけは
+安全側に倒し、**未確認は開始できない**として扱う（やり直せばよい）。
 """
 
 from __future__ import annotations
@@ -42,6 +56,11 @@ AVAILABLE = "available"
 UNAVAILABLE = "unavailable"
 UNKNOWN = "unknown"
 CHECKING = "checking"
+NOT_SELECTED = "not_selected"
+"""モデル選択専用。**「無い」ではなく「まだ選ばれていない」。**
+
+対処が違う（探しに行くのではなく、選ばせる）ので混ぜない。
+"""
 
 # 飛ばす設定の名前（画面のチェックと対応）
 SKIP_TRANSCRIPTION = "skip_transcription"
@@ -142,6 +161,7 @@ def evaluate_run_readiness(
     whisper_model: str,
     local_ai: str,
     visual_model: str,
+    vision: str = UNKNOWN,
     skip_transcription: bool = False,
     checking: bool = False,
 ) -> RunReadiness:
@@ -153,6 +173,7 @@ def evaluate_run_readiness(
         未確認は理由にしない（実際には動くかもしれない）。
       - 文字起こしを「飛ばす」と利用者が明示したなら、理由から外す。
       - **映像の解析は飛ばせない。** v1 ではこれが本体である。
+      - **画像入力だけは、未確認でも止める**（上の docstring の理由）。
     """
     readiness = RunReadiness(checking=checking)
     if checking:
@@ -170,16 +191,41 @@ def evaluate_run_readiness(
             remedy="代表画像の抽出に必要です。"
                    "「参照」から ffmpeg.exe の場所を指定してください。"))
 
-    # --- 映像の解析（**飛ばせない**）---------------------------------------
+    # --- 映像の解析（**飛ばせない。4 段で確かめる**）-----------------------
+    #
+    # 上の段が駄目なら下は問わない。理由を 3 つ並べても、利用者が
+    # 次にやることは 1 つだけなので。
     if local_ai == UNAVAILABLE:
         readiness.blockers.append(Blocker(
             problem="ローカルAIに接続できません。",
             remedy="映像の解析には LM Studio が必要です。"
                    "LM Studio を起動し、ローカルサーバーを ON にしてください。"))
+    elif visual_model == NOT_SELECTED:
+        readiness.blockers.append(Blocker(
+            problem="映像解析に使用するローカルAIモデルが選択されていません。",
+            remedy="LM Studio を起動し、画像を扱えるモデルを読み込んだ後、"
+                   "「ローカルAI設定」で使用するモデルを選択してください。"))
     elif visual_model == UNAVAILABLE:
         readiness.blockers.append(Blocker(
-            problem="映像解析に使うモデルが見つかりません。",
-            remedy="「ローカルAI設定」でモデルを選び直してください。"))
+            problem="前回使用したモデルを利用できません。",
+            remedy="「ローカルAI設定」で使用するモデルを選び直してください。"
+                   "（別のモデルへ自動では切り替えません）"))
+    elif vision == CHECKING:
+        readiness.blockers.append(Blocker(
+            problem="画像処理能力を確認しています…",
+            remedy="確認が終わるまでお待ちください。"))
+    elif vision == UNAVAILABLE:
+        readiness.blockers.append(Blocker(
+            problem="このモデルでは画像入力を利用できません。",
+            remedy="映像の解析には画像入力に対応したモデルが必要です。"
+                   "「ローカルAI設定」で別のモデルを選択してください。"))
+    elif vision != AVAILABLE:
+        # **「たぶん使える」で始めない。** 確かめられていないだけでも止める。
+        # ここを通すと、全部の動画が映像解析で落ちて時間だけが失われる。
+        readiness.blockers.append(Blocker(
+            problem="画像処理能力を確認できませんでした。",
+            remedy="LM Studio の状態を確認して、"
+                   "「環境チェック」をやり直してください。"))
     else:
         readiness.performed.append("映像の解析")
 

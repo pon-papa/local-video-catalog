@@ -94,6 +94,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # 24 枚なら 390 秒前後になり、300 秒では足りない。
         # **待ち時間は生成内容を変えないので config_hash には含めない。**
         "summary_timeout_seconds": 1200,
+        # 画像入力を確かめる 1 回きりの待ち時間。
+        # 送るのは 8×8 の画像 1 枚だが、モデルの読み込みから始まると
+        # 実測 56.7 秒かかった例がある。短くすると「非対応」が
+        # 「確認できませんでした」に化けるので余裕を持たせる。
+        "vision_probe_timeout_seconds": 120,
         # VRAM の少ない環境で同時送信しない
         "maximum_concurrent_requests": 1,
     },

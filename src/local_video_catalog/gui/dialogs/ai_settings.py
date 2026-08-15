@@ -6,6 +6,12 @@
 **外部インターネットへはつながない。** モデルの一覧は localhost の
 LM Studio から取り、文字起こしモデルは ``userdata/models/whisper/`` の
 実ファイルだけを候補にする。**自動ダウンロードはしない。**
+
+**候補は LM Studio が実際に返した model id だけ。** ここで存在しない
+名前を選べるようにすると、開始できない状態を利用者自身が作れてしまう。
+
+**選ばれていない状態を許す。** 初回は空（未選択）で、そのままでは
+解析を開始できない。勝手に既定のモデルを選んだことにしない。
 """
 
 from __future__ import annotations
@@ -19,6 +25,26 @@ from ... import environment_check, paths, vlm_client
 from ..state import GuiState
 
 TITLE = "ローカルAI設定"
+
+NOT_SELECTED = "（未選択）"
+"""空の選択を、目に見える文字として見せる。"""
+
+
+def label_for(model_id: str) -> str:
+    """一覧に出す表示。**推奨かどうかの注記だけを足す。**
+
+    注記は目安であって、これで開始可否を決めない。画像を扱えるかは
+    ``vision_probe`` が実際に確かめる。
+    """
+    if model_id == environment_check.RECOMMENDED_VISUAL_MODEL:
+        return f"{model_id}  ← 動作確認済み"
+    return model_id
+
+
+def model_from_label(label: str) -> str:
+    """表示から model id へ戻す。"""
+    text = str(label).split("  ←", 1)[0].strip()
+    return "" if text == NOT_SELECTED else text
 
 
 def available_whisper_models() -> list[str]:
@@ -53,8 +79,10 @@ def show(parent: tk.Misc, state: GuiState) -> None:
     status = ttk.Label(frame, text="モデル一覧を読み込んでいます…")
     status.pack(anchor="w")
 
-    ttk.Label(frame, text="映像の解析に使うモデル").pack(anchor="w", pady=(10, 2))
-    visual_var = tk.StringVar(value=state.visual_model or vlm_settings.model_match)
+    ttk.Label(frame, text="映像の解析に使うモデル（必須）"
+              ).pack(anchor="w", pady=(10, 2))
+    visual_var = tk.StringVar(value=label_for(state.visual_model)
+                              if state.visual_model else NOT_SELECTED)
     visual_box = ttk.Combobox(frame, textvariable=visual_var, state="readonly")
     visual_box.pack(fill="x")
 
@@ -75,7 +103,9 @@ def show(parent: tk.Misc, state: GuiState) -> None:
         frame, foreground="gray", justify="left",
         text=("接続先はこのPCの中（127.0.0.1）だけです。\n"
               "モデルの自動ダウンロードは行いません。\n"
-              "文字起こしモデルは userdata\\models\\whisper\\ に置いてください。"))
+              "文字起こしモデルは userdata\\models\\whisper\\ に置いてください。\n"
+              "「動作確認済み」以外のモデルでも画像を扱えれば使えますが、"
+              "結果の品質は保証されません。"))
     note.pack(anchor="w", pady=(12, 0))
 
     def reload() -> None:
@@ -83,12 +113,18 @@ def show(parent: tk.Misc, state: GuiState) -> None:
             vlm_settings.base_url)
         if error:
             status.configure(text=error)
-            visual_box.configure(values=[visual_var.get()])
-            description_box.configure(values=["", visual_var.get()])
+            # **存在しないモデルを選べるようにしない。**
+            visual_box.configure(values=[NOT_SELECTED])
+            description_box.configure(values=[""])
         else:
             status.configure(text=f"LM Studio：接続済み（{len(models)} モデル）")
-            visual_box.configure(values=models)
+            visual_box.configure(
+                values=[NOT_SELECTED, *(label_for(m) for m in models)])
             description_box.configure(values=["", *models])
+            if model_from_label(visual_var.get()) not in models:
+                # 前回のモデルが今は無い。**勝手に別のモデルへ変えない。**
+                # 未選択へ戻し、利用者に選び直してもらう。
+                visual_var.set(NOT_SELECTED)
         whisper_models = available_whisper_models()
         whisper_box.configure(values=whisper_models or [whisper_var.get()])
         if not whisper_models:
@@ -101,7 +137,7 @@ def show(parent: tk.Misc, state: GuiState) -> None:
     ttk.Button(buttons, text="モデル一覧を再読込", command=reload).pack(side="left")
 
     def accept() -> None:
-        state.visual_model = visual_var.get().strip()
+        state.visual_model = model_from_label(visual_var.get())
         state.description_model = description_var.get().strip()
         state.whisper_model = whisper_var.get().strip()
         dialog.destroy()

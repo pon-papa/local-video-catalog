@@ -31,6 +31,7 @@ from typing import Any, Callable, Protocol
 from . import APPLICATION_VERSION
 from . import config as config_module
 from . import database as db_module
+from . import environment_check
 from . import paths, recycle, register, selection, stage_report
 from .logging_utils import RunLogger, configure_stdio_utf8, local_now_iso, new_run_id
 
@@ -415,6 +416,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-visual", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--skip-transcription", action="store_true")
+    # **画面で選んだモデルを、そのまま解析へ渡す。**
+    # 渡さないと「画面に出ているモデル」と「実際に使うモデル」が食い違う。
+    parser.add_argument("--visual-model", default=None,
+                        help="映像解析に使用するモデル")
+    parser.add_argument("--description-model", default=None)
+    parser.add_argument("--whisper-model", default=None)
     parser.add_argument("--recycle-cache", action="store_true",
                         help="完了した動画の中間ファイルをゴミ箱へ移動する")
     parser.add_argument("--only-catalog-id", action="append", default=[],
@@ -443,6 +450,12 @@ def run(args: argparse.Namespace,
             raw["recursive"] = True
         if args.source_folder:
             raw["source_path"] = args.source_folder
+        # 環境チェックと同じ関数を通す。判定に使ったモデルと、実際に
+        # 解析へ渡すモデルを一致させるため。
+        environment_check.apply_model_choices(
+            raw, visual_model=args.visual_model,
+            description_model=args.description_model,
+            whisper_model=args.whisper_model)
         settings = config_module.build_settings(raw)
         config_module.verify_userdata()
     except (config_module.ConfigError, config_module.UserDataError) as exc:

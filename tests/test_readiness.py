@@ -35,6 +35,9 @@ ALL_OK = {
     "ffmpeg": rd.AVAILABLE, "ffprobe": rd.AVAILABLE,
     "whisper_feature": rd.AVAILABLE, "whisper_model": rd.AVAILABLE,
     "local_ai": rd.AVAILABLE, "visual_model": rd.AVAILABLE,
+    # **画像入力は「確かめて使えた」状態が既定。**
+    # 未確認のままでは開始できない（それが v1 の安全側の決まり）。
+    "vision": rd.AVAILABLE,
 }
 
 
@@ -187,6 +190,17 @@ class UnknownTests(unittest.TestCase):
 
     def test_unknown_local_ai_does_not_block(self) -> None:
         self.assertTrue(evaluate(local_ai=rd.UNKNOWN).can_start)
+
+    def test_unknown_vision_does_block(self) -> None:
+        """**画像入力だけは例外。** 確かめていないなら始めない。
+
+        始めてしまうと、全部の動画が映像解析で落ちて時間だけが失われる。
+        他の項目と違い、やり直しの費用が桁違いに大きい。
+        """
+        readiness = evaluate(vision=rd.UNKNOWN)
+        self.assertFalse(readiness.can_start)
+        self.assertIn("確認できませんでした",
+                      "\n".join(readiness.detail_lines()))
 
     def test_warn_level_maps_to_unknown(self) -> None:
         from local_video_catalog import environment_check as ec

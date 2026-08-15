@@ -28,7 +28,7 @@ from typing import Any
 
 from . import asr_engine
 from . import config as config_module
-from . import paths, vlm_client
+from . import paths, vision_probe, vlm_client
 from . import readiness as readiness_module
 from .logging_utils import configure_stdio_utf8
 
@@ -64,7 +64,15 @@ ESSENTIAL_FOR_ANALYSIS = ("ffmpeg", "ffprobe")
 WHISPER_FEATURE = "whisper 機能"
 WHISPER_MODEL = "文字起こしモデル"
 LOCAL_AI = "ローカルAI"
-VISUAL_MODEL = "映像解析モデル"
+VISUAL_MODEL = "使用モデル"
+VISION = "画像入力"
+
+RECOMMENDED_VISUAL_MODEL = "qwen3-vl-8b-instruct"
+"""実運用で動作を確認したモデル。
+
+**これを特別扱いして probe を省かない。** 「名前が合っているから大丈夫」
+にした瞬間、実際には読み込まれていない場合を見逃す。表示の注記だけに使う。
+"""
 
 
 @dataclass
@@ -115,8 +123,20 @@ class CheckResult:
             "whisper_feature": self.availability(WHISPER_FEATURE),
             "whisper_model": self.availability(WHISPER_MODEL),
             "local_ai": self.availability(LOCAL_AI),
-            "visual_model": self.availability(VISUAL_MODEL),
+            "visual_model": self.visual_model_availability(),
+            "vision": self.availability(VISION),
         }
+
+    def visual_model_availability(self) -> str:
+        """モデルの状態。**「未選択」と「見つからない」を分ける。**
+
+        対処が違う（選ばせる／選び直させる）ので、同じ「利用不可」に
+        まとめない。
+        """
+        item = self.find(VISUAL_MODEL)
+        if item is not None and item.detail == NOT_SELECTED_DETAIL:
+            return readiness_module.NOT_SELECTED
+        return self.availability(VISUAL_MODEL)
 
     def readiness(self, *, skip_transcription: bool = False
                   ) -> readiness_module.RunReadiness:
@@ -151,6 +171,30 @@ def list_local_models(base_url: str, *, timeout: int = 5
         return ([], friendly_error(str(exc)))
     except Exception as exc:                       # 接続不可など
         return ([], friendly_error(str(exc)))
+
+
+NOT_SELECTED_DETAIL = "未選択"
+"""``VISUAL_MODEL`` がこの内容なら「まだ選ばれていない」。"""
+
+
+def apply_model_choices(raw: dict[str, Any], *, visual_model: str | None,
+                        whisper_model: str | None = None,
+                        description_model: str | None = None) -> None:
+    """画面で選んだモデルを設定へ反映する。**環境チェックと解析で共通。**
+
+    ここを通さないと「画面に出ているモデル」と「実際に使うモデル」が
+    食い違う。``None`` は「指定なし（設定ファイルのまま）」、空文字は
+    **「未選択」**として扱う。
+    """
+    if visual_model is not None:
+        raw["vlm"] = {**dict(raw.get("vlm") or {}),
+                      "model_match": str(visual_model).strip()}
+    if description_model is not None:
+        raw["description"] = {**dict(raw.get("description") or {}),
+                              "model_match": str(description_model).strip()}
+    if whisper_model is not None and str(whisper_model).strip():
+        raw["asr"] = {**dict(raw.get("asr") or {}),
+                      "model_name": str(whisper_model).strip()}
 
 
 def friendly_error(message: str) -> str:
@@ -210,29 +254,65 @@ def check_free_space(result: CheckResult) -> None:
         result.add("空き容量", LEVEL_OK, detail)
 
 
-def check_local_ai(result: CheckResult, raw: dict[str, Any]) -> None:
+def check_local_ai(result: CheckResult, raw: dict[str, Any], *,
+                   probe_vision: bool = True) -> None:
+    """ローカルAI・使用モデル・画像入力を、この順に確かめる。
+
+    **接続できただけでは「映像を解析できる」と言わない。**
+    モデルが選ばれていて、それが今も存在し、実際に画像を受け取れる
+    ところまで確かめる。
+    """
     settings = vlm_client.VlmSettings.from_settings(raw)
     try:
         vlm_client.assert_local_base_url(settings.base_url)
     except vlm_client.PrivacyConfigurationError as exc:
-        result.add("ローカルAI", LEVEL_NG, str(exc),
+        result.add(LOCAL_AI, LEVEL_NG, str(exc),
                    "接続先はこのPCの中だけにしてください。")
         return
 
     available, error = list_local_models(settings.base_url)
     if error:
         # **確かめて駄目だったので「利用不可」。**
-        # 飛ばす設定なら開始してよいかは readiness が決める。
         # ここで「注意」に落とすと、未確認と区別できなくなる。
-        result.add("ローカルAI", LEVEL_NG, "未接続", error)
+        result.add(LOCAL_AI, LEVEL_NG, "未接続", error)
         return
 
-    result.add("ローカルAI", LEVEL_OK, f"接続済み（{len(available)} モデル）")
-    try:
-        chosen = vlm_client.select_model(available, settings.model_match)
-        result.add("映像解析モデル", LEVEL_OK, chosen)
-    except vlm_client.ModelSelectionError as exc:
-        result.add("映像解析モデル", LEVEL_NG, settings.model_match, str(exc))
+    result.add(LOCAL_AI, LEVEL_OK, f"接続済み（{len(available)} モデル）")
+
+    selected = str(settings.model_match or "").strip()
+    if not selected:
+        result.add(VISUAL_MODEL, LEVEL_NG, NOT_SELECTED_DETAIL,
+                   "LM Studio を起動し、画像を扱えるモデルを読み込んだ後、"
+                   "「ローカルAI設定」で使用するモデルを選択してください。")
+        return
+
+    if selected not in available:
+        # **勝手に別モデルへ切り替えない。** 部分一致で似た名前を拾うと、
+        # 利用者が選んだつもりのないモデルで解析が進んでしまう。
+        result.add(VISUAL_MODEL, LEVEL_NG, f"{selected}（見つかりません）",
+                   "前回使用したモデルを利用できません。"
+                   "「ローカルAI設定」で使用するモデルを選び直してください。")
+        return
+
+    note = "（動作確認済み）" if selected == RECOMMENDED_VISUAL_MODEL else ""
+    result.add(VISUAL_MODEL, LEVEL_OK, f"{selected}{note}")
+
+    if not probe_vision:
+        result.add(VISION, LEVEL_WARN, "未確認",
+                   "「環境チェック」で確認できます。")
+        return
+
+    found = vision_probe.probe(settings, selected)
+    if found.outcome == vision_probe.OK:
+        result.add(VISION, LEVEL_OK, found.detail)
+    elif found.outcome in (vision_probe.NO_IMAGE, vision_probe.NOT_CONNECTED,
+                           vision_probe.MODEL_MISSING):
+        # **確かめて駄目だった。** 「このモデルでは使えません」と言い切る。
+        result.add(VISION, LEVEL_NG, found.detail, found.advice)
+    else:
+        # **確かめられなかった。** 「非対応」とは書かない（対処が違う）。
+        # 注意どまりにするが、readiness はこれでも開始を許さない。
+        result.add(VISION, LEVEL_WARN, found.detail, found.advice)
 
 
 def check_transcription(result: CheckResult, raw: dict[str, Any], *,
@@ -284,7 +364,8 @@ def check_environment(
                         ffmpeg_path=settings.ffmpeg_path if ffmpeg_ok else None,
                         skip=skip_transcription, quick=quick)
     # 映像の解析は必須工程なので、常に必要なものとして確かめる。
-    check_local_ai(result, raw)
+    # ``--quick`` のときは画像 probe を省く（そのぶん「未確認」が残る）。
+    check_local_ai(result, raw, probe_vision=not quick)
 
     result.add("保存先", LEVEL_OK, str(paths.userdata_dir()))
     check_free_space(result)
@@ -359,8 +440,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--source-folder")
     parser.add_argument("--skip-transcription", action="store_true")
+    parser.add_argument("--visual-model", default=None,
+                        help="映像解析に使用するモデル（画面で選んだもの）")
+    parser.add_argument("--whisper-model", default=None)
     parser.add_argument("--quick", action="store_true",
-                        help="時間のかかる確認を省く")
+                        help="時間のかかる確認を省く（画像 probe も省く）")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -371,6 +455,8 @@ def run(args: argparse.Namespace) -> int:
         raw = config_module.load_settings_dict(args.config)
         if args.source_folder:
             raw["source_path"] = args.source_folder
+        apply_model_choices(raw, visual_model=args.visual_model,
+                            whisper_model=args.whisper_model)
         settings = config_module.build_settings(raw, require_ffprobe=False)
     except (config_module.ConfigError, paths.AppRootError) as exc:
         print(f"設定エラー: {exc}", file=sys.stderr)
@@ -380,6 +466,7 @@ def run(args: argparse.Namespace) -> int:
         raw=raw, settings=settings,
         source_folder=args.source_folder or raw.get("source_path"),
         skip_transcription=args.skip_transcription, quick=args.quick)
+    readiness = result.readiness(skip_transcription=args.skip_transcription)
 
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False))
@@ -390,11 +477,14 @@ def run(args: argparse.Namespace) -> int:
             print(line)
         print("")
         # **OK / NG だけでなく「いま何ができて、どうすればよいか」を書く。**
-        for line in result.readiness(
-                skip_transcription=args.skip_transcription).detail_lines():
+        for line in readiness.detail_lines():
             print(line)
 
-    return EXIT_NG if result.level == LEVEL_NG else EXIT_OK
+    # **開始できないなら、終了コードでもそう伝える。**
+    # 「画像処理能力を確認できなかった」は注意どまりだが開始はできない。
+    # ここを result.level だけで決めると、成功したように見えてしまう。
+    return EXIT_NG if (result.level == LEVEL_NG
+                       or not readiness.can_start) else EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:

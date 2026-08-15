@@ -54,9 +54,18 @@ class AvailabilityTests(unittest.TestCase):
     def test_readiness_uses_the_availabilities(self) -> None:
         result = ec.CheckResult()
         for name in ("ffmpeg", "ffprobe", ec.WHISPER_FEATURE,
-                     ec.WHISPER_MODEL, ec.LOCAL_AI, ec.VISUAL_MODEL):
+                     ec.WHISPER_MODEL, ec.LOCAL_AI, ec.VISUAL_MODEL,
+                     ec.VISION):
             result.add(name, ec.LEVEL_OK)
         self.assertTrue(result.readiness().can_start)
+
+    def test_an_unchecked_vision_capability_blocks(self) -> None:
+        """**画像入力を確かめないまま「開始できます」と言わない。**"""
+        result = ec.CheckResult()
+        for name in ("ffmpeg", "ffprobe", ec.WHISPER_FEATURE,
+                     ec.WHISPER_MODEL, ec.LOCAL_AI, ec.VISUAL_MODEL):
+            result.add(name, ec.LEVEL_OK)
+        self.assertFalse(result.readiness().can_start)
 
     def test_local_ai_down_blocks_the_run(self) -> None:
         """**映像の解析は必須。** 飛ばして開始する道は用意しない。"""

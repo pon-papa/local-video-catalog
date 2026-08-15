@@ -86,10 +86,36 @@ class GuiState:
             args.append("--recursive")
         args += ["--time-budget-minutes", f"{self.effective_time_budget():g}"]
         args += ["--max-videos", str(self.effective_max_videos())]
+        # **画面で選んだモデルを必ず渡す。** 渡さないと設定ファイルの
+        # 既定が使われ、画面の表示と実際に使うモデルが食い違う。
+        args += self.model_arguments()
+        if self.description_model.strip():
+            args += ["--description-model", self.description_model.strip()]
         if self.skip_transcription:
             args.append("--skip-transcription")
         if self.recycle_cache:
             args.append("--recycle-cache")
+        return args
+
+    def model_arguments(self) -> list[str]:
+        """使うモデルの指定。**環境チェックと解析の両方へ同じものを渡す。**
+
+        映像解析モデルは空文字でも渡す。空＝**未選択**という意味があり、
+        「指定なし（設定ファイルのまま）」と区別する必要があるため。
+        """
+        args = ["--visual-model", self.visual_model.strip()]
+        if self.whisper_model.strip():
+            args += ["--whisper-model", self.whisper_model.strip()]
+        return args
+
+    def environment_arguments(self) -> list[str]:
+        """環境チェックへ渡す引数。**開始判定と同じモデルで確かめる。**"""
+        args: list[str] = []
+        if self.source_folder:
+            args += ["--source-folder", self.source_folder]
+        args += self.model_arguments()
+        if self.skip_transcription:
+            args.append("--skip-transcription")
         return args
 
 

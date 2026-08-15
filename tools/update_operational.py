@@ -22,6 +22,9 @@ from pathlib import Path
 
 USERDATA = "userdata"
 
+PLACEHOLDERS = frozenset({".keep", ".gitignore"})
+"""フォルダーを残すためだけの空ファイル。**成果物として数えない。**"""
+
 
 def app_root() -> Path:
     for candidate in [Path(__file__).resolve().parent,
@@ -92,7 +95,11 @@ def describe_userdata(target: Path) -> list[str]:
         directory = userdata / name
         if not directory.is_dir():
             continue
-        files = [p for p in directory.rglob("*") if p.is_file()]
+        # **置き場所を保つためだけの空ファイルは数えない。**
+        # 数えると「説明文 4 件」のように、実際より 1 件多く見えて
+        # 「身に覚えのない成果物が増えた」と読めてしまう。
+        files = [p for p in directory.rglob("*")
+                 if p.is_file() and p.name not in PLACEHOLDERS]
         size = sum(p.stat().st_size for p in files)
         lines.append(f"  {name:14} {len(files):6,} ファイル "
                      f"{size / 1024 / 1024:10,.1f} MB")

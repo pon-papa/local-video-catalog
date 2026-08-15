@@ -47,6 +47,7 @@ class CatalogWindow:
         self.state = state_module.load()
         self.task: runner_module.BackgroundTask | None = None
         self.availability: dict[str, str] | None = None
+        self.checking_reason = ""
         self._environment_queue: "queue.Queue[runner_module.TaskResult]" = (
             queue.Queue())
 
@@ -250,25 +251,32 @@ class CatalogWindow:
         """手動の「環境チェック」。設定を変えた後の再確認に使う。"""
         self._start_environment_check(automatic=False)
 
-    def _start_environment_check(self, *, automatic: bool) -> None:
+    def _start_environment_check(self, *, automatic: bool,
+                                 reason: str = "") -> None:
         """環境チェックを**別スレッドで**動かす。
 
-        LM Studio への接続や外部プログラムの確認は時間がかかることが
-        あるため、画面スレッドで待たない。終わるまで「確認しています」と
-        出し、結果が届いたら書き換える。
+        LM Studio への接続、選んだモデルの確認、そして**画像入力の確認**は
+        時間がかかることがあるため、画面スレッドで待たない。終わるまで
+        「確認しています」と出し、結果が届いたら書き換える。
+
+        ``reason`` はモデルを変えた直後など、何を確かめているのかを
+        利用者へ具体的に伝えたいときに使う。
         """
         state = self._collect_state()
         self._clear_log()
-        self.status_var.set("環境を確認しています……")
+        # **前の結果を捨てる。** 残したままだと、モデルを変えた直後に
+        # 古いモデルの「画像入力OK」で開始できてしまう。
+        self.availability = None
+        self.checking_reason = reason
+        self.status_var.set(reason or "環境を確認しています……")
+        self._append(reason or "環境を確認しています……")
         self.button_env.configure(state="disabled")
         self.button_start.configure(state="disabled")
 
-        # **--quick は使わない。** whisper 機能の確認まで済ませないと
-        # 「未確認」のまま残り、利用者に判断できない状態を見せてしまう。
-        # 確認自体は数秒で終わり、別スレッドなので画面は止まらない。
-        arguments = ["--json"]
-        if state.source_folder:
-            arguments += ["--source-folder", state.source_folder]
+        # **--quick は使わない。** whisper 機能と画像入力の確認まで
+        # 済ませないと「未確認」のまま残り、利用者に判断できない状態を
+        # 見せてしまう。別スレッドなので画面は止まらない。
+        arguments = ["--json", *state.environment_arguments()]
 
         def work() -> None:
             self._environment_queue.put(
@@ -341,6 +349,7 @@ class CatalogWindow:
                 whisper_model=readiness_module.UNKNOWN,
                 local_ai=readiness_module.UNKNOWN,
                 visual_model=readiness_module.UNKNOWN,
+                vision=readiness_module.UNKNOWN,
                 checking=True)
         return readiness_module.evaluate_run_readiness(
             **self.availability,
@@ -536,8 +545,17 @@ class CatalogWindow:
     def _open_ai_settings(self) -> None:
         from .dialogs import ai_settings
 
+        before = self.state.visual_model
         ai_settings.show(self.root, self.state)
         state_module.save(self.state)
+        if self.state.visual_model == before:
+            return
+
+        # **前のモデルの判定を新しいモデルへ流用しない。**
+        # モデルが変われば画像を扱えるかどうかも変わる。確かめ直すまでは
+        # 開始できない状態にする。
+        self._start_environment_check(
+            automatic=False, reason="画像処理能力を確認しています…")
 
     # -- 終了 -------------------------------------------------------------
 
