@@ -25,6 +25,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .. import config as config_module
+from .. import environment_check
 from .. import paths, process_utils
 from . import runner as runner_module
 from . import state as state_module
@@ -43,7 +44,13 @@ def open_in_explorer(target: Path, *, select: bool = False) -> None:
 
 
 class CatalogWindow:
-    def __init__(self) -> None:
+    def __init__(self, *, check_environment_on_start: bool = True) -> None:
+        """画面を組み立てる。
+
+        ``check_environment_on_start`` は**試験のためだけ**の入口。
+        画面が組み上がること自体を確かめたいとき、LM Studio へ
+        つなぎに行かせない。利用者向けの動作は既定のまま変わらない。
+        """
         self.state = state_module.load()
         self.task: runner_module.BackgroundTask | None = None
         self.availability: dict[str, str] | None = None
@@ -62,7 +69,8 @@ class CatalogWindow:
 
         # **起動したら自動で環境を確かめる。** 毎回ボタンを押させない。
         # 画面を止めないよう別スレッドで行い、終わったら表示を更新する。
-        self._start_environment_check(automatic=True)
+        if check_environment_on_start:
+            self._start_environment_check(automatic=True)
 
     # -- 組み立て ---------------------------------------------------------
 
@@ -122,6 +130,19 @@ class CatalogWindow:
                         variable=self.skip_asr_var,
                         command=self._on_skip_changed
                         ).pack(anchor="w", pady=(6, 0))
+
+        # **ローカルAI は「実行条件」。** 結果を見る道具ではなく、
+        # 始める前に決めておくもの。だから設定ボタンもここに置く。
+        # いま何が選ばれているかを、押さなくても分かるように出す。
+        ai_row = ttk.Frame(run_box)
+        ai_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(ai_row, text="ローカルAI").pack(side="left")
+        self.visual_model_var = tk.StringVar()
+        ttk.Label(ai_row, textvariable=self.visual_model_var,
+                  foreground="gray").pack(side="left", padx=(6, 0))
+        ttk.Button(ai_row, text="設定…", command=self._open_ai_settings
+                   ).pack(side="right")
+
         self.recycle_var = tk.BooleanVar()
         ttk.Checkbutton(run_box,
                         text="完了した動画の中間ファイルをゴミ箱へ移動する",
@@ -173,14 +194,34 @@ class CatalogWindow:
             ("HTMLカタログを開く", self._open_catalog),
             ("説明文を開く", self._open_descriptions),
             ("元動画の場所を開く", self._open_source),
-            ("ローカルAI設定…", self._open_ai_settings),
+            # **ローカルAI設定はここに置かない。** 結果の確認ではなく、
+            # 始める前の実行条件なので「今回の実行条件」へ移した。
         ):
             ttk.Button(outputs, text=label, command=command).pack(
                 side="left", padx=(0, 6))
 
     # -- 状態の反映 -------------------------------------------------------
 
+    def _model_label(self) -> str:
+        """画面に出す使用モデルの表示。
+
+        **``state.visual_model`` だけを見る。** これが環境チェックにも
+        解析にも渡る値そのもの。画面用に別の変数を持つと、表示と実際が
+        食い違う（前にそれで「画面のモデルと違うモデルで解析していた」
+        不具合を出している）。
+        """
+        model = (self.state.visual_model or "").strip()
+        if not model:
+            return "未選択（設定から選んでください）"
+        if model == environment_check.RECOMMENDED_VISUAL_MODEL:
+            return f"{model}（動作確認済み）"
+        return model
+
+    def _refresh_model_label(self) -> None:
+        self.visual_model_var.set(self._model_label())
+
     def _apply_state(self) -> None:
+        self._refresh_model_label()
         self.source_var.set(self.state.source_folder)
         self.recursive_var.set(self.state.recursive)
         self.minutes_var.set(self.state.time_budget_minutes)
@@ -548,6 +589,7 @@ class CatalogWindow:
         before = self.state.visual_model
         ai_settings.show(self.root, self.state)
         state_module.save(self.state)
+        self._refresh_model_label()
         if self.state.visual_model == before:
             return
 

@@ -24,6 +24,27 @@ from ..source_ref import SourceRef
 
 SCOPE_FULL = "full"
 
+NOTE_PREFIX = "参考: "
+
+
+def label_note(message: str) -> str:
+    """診断メッセージへ「参考:」を付ける。**二重に付けない。**
+
+    実運用のログに ``参考: 参考: 同一の文が 10 回連続しています…`` と
+    出た。本文（``transcript_schemas``）側に既に「参考:」で始まるものが
+    あり、表示側でも付けていたため。
+
+    **本文がどう書かれていても、表示は 1 つに保つ。** 本文側の文字列を
+    直すだけだと、後から同じ書き方の警告が増えたときに再発する。
+
+    これは表示だけの整形で、**判定には一切関わらない。**
+    """
+    text = str(message).strip()
+    marker = NOTE_PREFIX.strip()
+    while text.startswith(marker):
+        text = text[len(marker):].lstrip()
+    return f"{NOTE_PREFIX}{text}"
+
 
 def _model_sha256(path: Path) -> str:
     """モデルの同一性。**中身が変われば再処理させる。**
@@ -260,7 +281,7 @@ def run_transcription(asset_id: str, context) -> "pipeline_module.StageOutcome":
         logger.info("    疑いのある発話も記録は残します。"
                     "説明文の材料からだけ外します。")
     for warning in merged.warnings[:5]:
-        logger.info(f"    参考: {warning}")
+        logger.info(f"    {label_note(warning)}")
 
     logger.event("transcription_finished", asset_id=asset_id,
                  status=merged.status, chunks_planned=len(planned),
