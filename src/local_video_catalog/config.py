@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import paths, process_utils
 
 # --------------------------------------------------------------------------
 # 既定値
@@ -299,10 +299,8 @@ def save_settings_dict(data: dict[str, Any]) -> Path:
 def probe_tool_version(tool_path: Path, timeout: int = 30) -> str:
     """ffprobe / ffmpeg のバージョン文字列（1 行目）を返す。"""
     try:
-        completed = subprocess.run(
-            [str(tool_path), "-hide_banner", "-version"],
-            capture_output=True, timeout=timeout, check=False,
-        )
+        completed = process_utils.run(
+            [tool_path, "-hide_banner", "-version"], timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ConfigError(f"バージョン取得に失敗しました: {tool_path} ({exc})") from exc
 
@@ -322,10 +320,8 @@ def ffmpeg_has_whisper(ffmpeg_path: Path | None, timeout: int = 30) -> bool:
     if not ffmpeg_path or not Path(ffmpeg_path).is_file():
         return False
     try:
-        completed = subprocess.run(
-            [str(ffmpeg_path), "-hide_banner", "-filters"],
-            capture_output=True, timeout=timeout, check=False,
-        )
+        completed = process_utils.run(
+            [ffmpeg_path, "-hide_banner", "-filters"], timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return False
     text = completed.stdout.decode("utf-8", errors="replace")

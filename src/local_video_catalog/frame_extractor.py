@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from . import FRAME_EXTRACTION_IMPL_VERSION, paths
+from . import FRAME_EXTRACTION_IMPL_VERSION, paths, process_utils
 
 DEFAULT_TARGET_INTERVAL_SECONDS = 30.0
 DEFAULT_MINIMUM_FRAME_COUNT = 6
@@ -268,8 +268,8 @@ def extract_one(
     command = build_ffmpeg_command(
         ffmpeg_path, source, frame, target, config, stream_index=stream_index)
     try:
-        completed = subprocess.run(
-            command, capture_output=True, timeout=timeout, check=False)
+        # 窓を出さずに起動する。1 本の動画で最大 24 回呼ばれる。
+        completed = process_utils.run(command, timeout=timeout)
     except subprocess.TimeoutExpired:
         return (False, None, f"{timeout} 秒以内に終わりませんでした。")
     except OSError as exc:

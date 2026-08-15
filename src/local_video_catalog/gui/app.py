@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import tkinter as tk
 import webbrowser
@@ -23,7 +22,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .. import config as config_module
-from .. import paths
+from .. import paths, process_utils
 from . import runner as runner_module
 from . import state as state_module
 
@@ -33,13 +32,11 @@ RUNNING_MESSAGE = "処理中です。画面は閉じずにお待ちください�
 
 
 def open_in_explorer(target: Path, *, select: bool = False) -> None:
-    """エクスプローラーで開く。**開くだけで、何も変更しない。**"""
-    if sys.platform != "win32":
-        return
-    if select and target.exists():
-        subprocess.Popen(["explorer", "/select,", str(target)])
-    else:
-        subprocess.Popen(["explorer", str(target)])
+    """エクスプローラーで開く。**開くだけで、何も変更しない。**
+
+    ここは窓を出すのが目的なので隠さない。利用者が押したときだけ呼ばれる。
+    """
+    process_utils.open_in_file_manager(target, select=select)
 
 
 class CatalogWindow:

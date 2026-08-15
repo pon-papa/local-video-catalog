@@ -41,7 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import ASR_IMPL_VERSION, paths
+from . import ASR_IMPL_VERSION, paths, process_utils
 
 ENGINE_NAME = "ffmpeg-whisper-filter"
 
@@ -373,11 +373,11 @@ def run_chunk(
 
     started = time.monotonic()
     try:
-        completed = subprocess.run(
-            command, capture_output=True, timeout=timeout, check=False,
+        completed = process_utils.run(
+            command, timeout=timeout,
             # 非 ASCII パス対策の要。ここを APP_ROOT にすることで
             # model と destination を ASCII 相対で渡せる。
-            cwd=str(paths.app_root()))
+            cwd=paths.app_root())
     except subprocess.TimeoutExpired:
         return ChunkRunResult(
             chunk=chunk, status=CHUNK_FAILED, error_type=ERROR_TIMEOUT,

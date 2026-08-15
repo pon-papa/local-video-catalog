@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
-from .. import paths, pipeline
+from .. import paths, pipeline, process_utils
 from ..logging_utils import child_process_environment
 
 MODULE_PIPELINE = "local_video_catalog.pipeline"
@@ -107,12 +107,11 @@ class BackgroundTask:
 
     def start(self) -> None:
         try:
-            self._process = subprocess.Popen(
+            self._process = process_utils.popen(
                 self.command,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
-                env=child_environment(), cwd=str(paths.app_root()),
-                creationflags=_no_window_flag())
+                env=child_environment(), cwd=paths.app_root())
         except OSError as exc:
             self.result.error = f"処理を開始できません: {exc}"
             self.result.exit_code = -1
@@ -169,13 +168,6 @@ class BackgroundTask:
         自分で止まる。台帳も元動画も壊れない。
         """
         return pipeline.request_stop()
-
-
-def _no_window_flag() -> int:
-    """Windows でコンソール窓を出さない。"""
-    if sys.platform == "win32":
-        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return 0
 
 
 def run_and_collect(module: str, arguments: list[str],

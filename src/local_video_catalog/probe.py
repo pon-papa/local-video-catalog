@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import FFPROBE_IMPL_VERSION
+from . import process_utils
 
 # 主映像の選択理由
 RULE_NO_VIDEO_STREAM = "no_video_stream"
@@ -253,8 +254,10 @@ def run_ffprobe(
         str(video_path),
     ]
     try:
-        completed = subprocess.run(
-            command, capture_output=True, timeout=timeout, check=False)
+        # process_utils を通すのは、画面から呼ばれたときにコンソール窓を
+        # 作らせないため。ffprobe は動画 1 本ごとに起動するので、
+        # 素で起動すると窓が何百回も明滅する。
+        completed = process_utils.run(command, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise ProbeError(
             ERROR_TIMEOUT,
