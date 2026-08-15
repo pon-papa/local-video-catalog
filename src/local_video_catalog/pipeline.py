@@ -410,7 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="稼働時間。0 で制限なし")
     parser.add_argument("--max-videos", type=int, default=None,
                         help="今回あらたに処理する本数。0 で制限なし")
-    parser.add_argument("--skip-visual", action="store_true")
+    # **内部専用。** 画面には出さない（v1 では映像の解析は必須工程）。
+    # LM Studio を用意できない試験環境で処理全体を通すために残している。
+    parser.add_argument("--skip-visual", action="store_true",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--skip-transcription", action="store_true")
     parser.add_argument("--recycle-cache", action="store_true",
                         help="完了した動画の中間ファイルをゴミ箱へ移動する")

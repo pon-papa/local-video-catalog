@@ -52,17 +52,24 @@ class GuiPipelineTestCase(TempAppRootTestCase):
         values = {
             "source_folder": str(self.source_root),
             "no_time_limit": True, "no_video_limit": True,
-            # ローカル AI を使わない工程だけを動かす
-            "skip_visual_analysis": True, "skip_transcription": True,
+            "skip_transcription": True,
         }
         values.update(overrides)
         return gui_state.GuiState(**values)  # type: ignore[arg-type]
+
+    def arguments(self, **overrides: object) -> list[str]:
+        """試験用の引数。
+
+        ``--skip-visual`` は**内部専用**で、画面からは出せない。ここでは
+        LM Studio を用意せずに処理全体を通すために直接付ける。
+        """
+        return self.state(**overrides).pipeline_arguments() + ["--skip-visual"]
 
 
 class StartRunsTheWholePipelineTests(GuiPipelineTestCase):
     def test_start_reaches_the_description_stage(self) -> None:
         """**登録だけで終わらないこと。**"""
-        task = gui_runner.start_analysis(self.state().pipeline_arguments())
+        task = gui_runner.start_analysis(self.arguments())
         self.assertFalse(task.result.error, task.result.error)
         result = task.wait(timeout=300)
         self.assertEqual(result.exit_code, 0, result.text)
@@ -77,20 +84,20 @@ class StartRunsTheWholePipelineTests(GuiPipelineTestCase):
             self.assertIsNotNone(database.get_description(asset_id))
 
     def test_progress_is_visible_in_the_output(self) -> None:
-        task = gui_runner.start_analysis(self.state().pipeline_arguments())
+        task = gui_runner.start_analysis(self.arguments())
         result = task.wait(timeout=300)
         for expected in ("動画の登録と基本情報", "代表画像", "説明文"):
             with self.subTest(text=expected):
                 self.assertIn(expected, result.text)
 
     def test_japanese_output_is_not_mangled(self) -> None:
-        task = gui_runner.start_analysis(self.state().pipeline_arguments())
+        task = gui_runner.start_analysis(self.arguments())
         result = task.wait(timeout=300)
         self.assertIn("解析", result.text)
         self.assertNotIn("�", result.text)
 
     def test_source_video_is_untouched(self) -> None:
-        task = gui_runner.start_analysis(self.state().pipeline_arguments())
+        task = gui_runner.start_analysis(self.arguments())
         task.wait(timeout=300)
         self.assertEqual(file_state(self.video), self.video_state)
 
@@ -98,14 +105,14 @@ class StartRunsTheWholePipelineTests(GuiPipelineTestCase):
 class GuiResumeTests(GuiPipelineTestCase):
     def test_second_run_reports_nothing_left(self) -> None:
         gui_runner.start_analysis(
-            self.state().pipeline_arguments()).wait(timeout=300)
+            self.arguments()).wait(timeout=300)
         second = gui_runner.start_analysis(
-            self.state().pipeline_arguments()).wait(timeout=300)
+            self.arguments()).wait(timeout=300)
         self.assertEqual(second.exit_code, 0)
         self.assertIn("完了しています", second.text)
 
     def test_preview_changes_nothing(self) -> None:
-        result = gui_runner.preview_targets(self.state().pipeline_arguments())
+        result = gui_runner.preview_targets(self.arguments())
         self.assertEqual(result.exit_code, 0, result.text)
         self.assertIn("変更していません", result.text)
         with db_module.CatalogDatabase() as database:
@@ -123,7 +130,7 @@ class GuiSafeStopTests(GuiPipelineTestCase):
                                  self.source_root / f"extra{index}.mp4",
                                  duration=2.0 + index)
 
-        task = gui_runner.start_analysis(self.state().pipeline_arguments())
+        task = gui_runner.start_analysis(self.arguments())
         self.assertFalse(task.result.error)
 
         # 登録が終わって解析へ入るのを待ってから停止を要求する
@@ -145,7 +152,7 @@ class GuiSafeStopTests(GuiPipelineTestCase):
 
     def test_catalog_update_from_the_gui(self) -> None:
         gui_runner.start_analysis(
-            self.state().pipeline_arguments()).wait(timeout=300)
+            self.arguments()).wait(timeout=300)
         result = gui_runner.update_catalog()
         self.assertEqual(result.exit_code, 0, result.text)
         self.assertTrue(paths.catalog_html_path().is_file())
@@ -156,7 +163,7 @@ class GuiRetryTests(GuiPipelineTestCase):
         make_synthetic_video(find_ffmpeg(), self.source_root / "other.mp4",
                              duration=4.0)
         gui_runner.start_analysis(
-            self.state().pipeline_arguments()).wait(timeout=300)
+            self.arguments()).wait(timeout=300)
 
         with db_module.CatalogDatabase() as database:
             rows = database.list_assets_under(self.source_root)
@@ -167,7 +174,7 @@ class GuiRetryTests(GuiPipelineTestCase):
             other_before = database.get_stage_status(
                 rows[1]["asset_id"], db_module.STAGE_DESCRIPTION)["attempt_count"]
 
-        task = gui_runner.retry_failed(self.state().pipeline_arguments(),
+        task = gui_runner.retry_failed(self.arguments(),
                                        [target["catalog_id"]])
         result = task.wait(timeout=300)
         self.assertEqual(result.exit_code, 0, result.text)
@@ -184,7 +191,7 @@ class GuiRetryTests(GuiPipelineTestCase):
 class GuiEnvironmentCheckTests(GuiPipelineTestCase):
     def test_environment_check_runs_and_reports(self) -> None:
         result = gui_runner.check_environment(
-            ["--quick", "--skip-visual", "--skip-transcription",
+            ["--quick", "--skip-transcription",
              "--source-folder", str(self.source_root)])
         self.assertIn(result.exit_code, (0, 3))
         self.assertIn("ffmpeg", result.text)

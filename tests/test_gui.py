@@ -53,7 +53,7 @@ class StatePersistenceTests(TempAppRootTestCase):
     def test_round_trip(self) -> None:
         state = gui_state.GuiState(
             source_folder="X:/videos", recursive=True,
-            time_budget_minutes=120, skip_visual_analysis=True)
+            time_budget_minutes=120, skip_transcription=True)
         self.assertTrue(gui_state.save(state))
         self.assertEqual(gui_state.load(), state)
 
@@ -138,11 +138,16 @@ class RunConditionTests(unittest.TestCase):
         self.assertIn("X:/videos", args)
 
     def test_skip_flags_are_passed(self) -> None:
-        args = gui_state.GuiState(skip_visual_analysis=True,
-                                  skip_transcription=True,
+        args = gui_state.GuiState(skip_transcription=True,
                                   recycle_cache=True).pipeline_arguments()
-        for flag in ("--skip-visual", "--skip-transcription", "--recycle-cache"):
+        for flag in ("--skip-transcription", "--recycle-cache"):
             self.assertIn(flag, args)
+
+    def test_the_visual_analysis_is_never_skipped_from_the_screen(self) -> None:
+        """**映像の解析は必須工程。** 画面のどの組み合わせでも飛ばさない。"""
+        args = gui_state.GuiState(skip_transcription=True,
+                                  recycle_cache=True).pipeline_arguments()
+        self.assertNotIn("--skip-visual", args)
 
     def test_storage_location_is_never_passed(self) -> None:
         """**保存先を画面から指定させない。** One-Folder 原則を守る。"""

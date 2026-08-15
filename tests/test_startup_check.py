@@ -58,27 +58,24 @@ class AvailabilityTests(unittest.TestCase):
             result.add(name, ec.LEVEL_OK)
         self.assertTrue(result.readiness().can_start)
 
-    def test_local_ai_down_blocks_only_without_skip(self) -> None:
+    def test_local_ai_down_blocks_the_run(self) -> None:
+        """**映像の解析は必須。** 飛ばして開始する道は用意しない。"""
         result = ec.CheckResult()
         for name in ("ffmpeg", "ffprobe", ec.WHISPER_FEATURE,
                      ec.WHISPER_MODEL):
             result.add(name, ec.LEVEL_OK)
         result.add(ec.LOCAL_AI, ec.LEVEL_NG, "未接続", "LM Studio を起動")
         self.assertFalse(result.readiness().can_start)
-        self.assertTrue(result.readiness(skip_visual=True).can_start)
+        self.assertFalse(result.readiness(skip_transcription=True).can_start)
 
-    def test_connection_failure_is_unavailable_regardless_of_skip(self) -> None:
-        """**飛ばす設定でも「利用不可」は「利用不可」。**
-
-        以前は飛ばす設定だと「注意」に落としていたので、未確認と
-        区別できなくなっていた。
-        """
+    def test_connection_failure_is_unavailable(self) -> None:
+        """繋がらなければ「利用不可」。未確認と混ぜない。"""
         from local_video_catalog import config as config_module
 
         raw = config_module.load_settings_dict()
         raw["vlm"] = {**raw["vlm"], "base_url": "http://127.0.0.1:9/v1"}
         result = ec.CheckResult()
-        ec.check_local_ai(result, raw, needed=False)
+        ec.check_local_ai(result, raw)
         self.assertEqual(result.availability(ec.LOCAL_AI), rd.UNAVAILABLE)
 
 
@@ -156,6 +153,17 @@ class GuiWiringTests(unittest.TestCase):
         # 閲覧系のボタンは無効化の対象に入っていない
         self.assertNotIn("_open_catalog", block)
         self.assertNotIn("_show_summary", block)
+
+    def test_preview_shows_what_will_be_done(self) -> None:
+        """「対象確認」で**今回行う工程**が出ること。"""
+        block = self.source.split("def _preview", 1)[1]
+        block = block.split("\n    def ", 1)[0]
+        self.assertIn("stage_lines", block)
+
+    def test_start_shows_what_will_be_done(self) -> None:
+        block = self.source.split("def _start(self", 1)[1]
+        block = block.split("\n    def ", 1)[0]
+        self.assertIn("stage_lines", block)
 
     def test_status_area_reports_library_scan_separately(self) -> None:
         block = self.source.split("def _update_status_from", 1)[1]

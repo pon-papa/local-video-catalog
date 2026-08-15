@@ -30,7 +30,7 @@
 | 11 | ローカルAI設定… | 映像解析／説明文／Whisper モデルを選ぶダイアログ。設定ファイルは書き換えず実行時に渡す | `gui/dialogs/` | `test_gui_state` |
 | 12 | 進み具合 | 工程別の完了数と、いま処理中の動画 | `gui/app.py` + `stage_report` | 手動 |
 | 13 | ログ表示 | 子プロセスの stdout をリアルタイム表示 | `gui/runner.py` | `test_gui_runner` |
-| 14 | 実行条件 | 稼働時間・本数上限・制限なし・映像解析を飛ばす・完了後に中間ファイル整理 | `gui/state.py` | `test_gui_state` |
+| 14 | 実行条件 | 稼働時間・本数上限・制限なし・文字起こしを飛ばす・完了後に中間ファイル整理 | `gui/state.py` | `test_gui_state` |
 | 15 | 入力元 / サブフォルダーも含める | フォルダー選択ダイアログ | `gui/app.py` + `gui/state.py` | `test_gui_state` |
 
 ### 長時間運転中も応答を維持する仕組み（旧版から継承）

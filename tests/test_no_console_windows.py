@@ -95,16 +95,20 @@ class HelperContractTests(unittest.TestCase):
 class OutputIsStillVisibleTests(unittest.TestCase):
     """**窓を消してもエラーは消さない。**"""
 
+    # 子側にも ``-X utf8`` を渡す。渡さないと子は日本語版 Windows の
+    # 既定（CP932）で書き出すので、UTF-8 として読むと復号に失敗する。
+    # **process_utils の問題ではなく、試験の書き方の問題。**
+
     def test_stdout_is_captured(self) -> None:
         done = process_utils.run(
-            [sys.executable, "-c", "print('こんにちは')"],
+            [sys.executable, "-X", "utf8", "-c", "print('こんにちは')"],
             text=True, encoding="utf-8")
         self.assertEqual(done.returncode, 0)
         self.assertIn("こんにちは", done.stdout)
 
     def test_stderr_is_captured(self) -> None:
         done = process_utils.run(
-            [sys.executable, "-c",
+            [sys.executable, "-X", "utf8", "-c",
              "import sys; print('失敗の内容', file=sys.stderr)"],
             text=True, encoding="utf-8")
         self.assertIn("失敗の内容", done.stderr)
@@ -133,7 +137,7 @@ class OutputIsStillVisibleTests(unittest.TestCase):
 
     def test_cwd_is_honoured(self) -> None:
         done = process_utils.run(
-            [sys.executable, "-c", "import os; print(os.getcwd())"],
+            [sys.executable, "-X", "utf8", "-c", "import os; print(os.getcwd())"],
             cwd=APP_ROOT, text=True, encoding="utf-8")
         self.assertIn(str(APP_ROOT), done.stdout)
 

@@ -3,14 +3,22 @@
 **画面と解析本体で判定を分けない。** ここ 1 箇所で決める。
 分けると「ボタンは押せるのに必ず失敗する」状態が生まれる。
 
+v1 の考え方:
+
+    **映像の解析はこのツールの本体なので必須。**
+    **文字起こしは補助情報なので任意。**
+
 工程ごとの依存関係（**実装を読んで確認したもの**）:
 
     登録・基本情報   ffprobe
     代表画像の抽出   ffmpeg
-    映像の解析       LM Studio ＋ 映像解析モデル
-    文字起こし       ffmpeg ＋ whisper 機能 ＋ 文字起こしモデル
-    説明文の作成     LM Studio があれば使う。**無くても定型文で完了する**
+    映像の解析       LM Studio ＋ 映像解析モデル      ← **必須**
+    文字起こし       ffmpeg ＋ whisper 機能 ＋ モデル ← 飛ばせる
+    説明文の作成     LM Studio があれば使う
     HTMLカタログ     説明文ファイルだけ
+
+映像の解析を飛ばす選択肢は画面に出さない。飛ばすと説明文が定型文だけに
+なり、このツールを使う意味がほとんど残らないため。
 
 **文字起こしは LM Studio を使わない。** 以前「LM Studio 未接続」のときに
 「文字起こしもできません」と表示していたのは誤りだった。
@@ -36,11 +44,9 @@ UNKNOWN = "unknown"
 CHECKING = "checking"
 
 # 飛ばす設定の名前（画面のチェックと対応）
-SKIP_VISUAL = "skip_visual_analysis"
 SKIP_TRANSCRIPTION = "skip_transcription"
 
 SKIP_LABELS = {
-    SKIP_VISUAL: "映像の解析を飛ばす",
     SKIP_TRANSCRIPTION: "文字起こしを飛ばす",
 }
 
@@ -102,16 +108,21 @@ class RunReadiness:
                 lines.extend(blocker.lines())
                 lines.append("")
         else:
-            if self.performed:
-                lines.append("今回行う工程: " + " / ".join(self.performed))
-            for warning in self.warnings:
-                lines.append(f"– {warning}")
-            if lines:
-                lines.append("")
+            lines.extend(self.stage_lines())
+            lines.append("")
             lines.append("✓ 解析を開始できます。")
 
         lines.append("動画ライブラリの確認、HTMLカタログの閲覧、"
                      "説明文の確認、設定の変更はいつでもできます。")
+        return lines
+
+    def stage_lines(self) -> list[str]:
+        """**今回なにを行うのか。** 行う工程と、行わない工程を並べる。"""
+        lines = ["今回行う工程:"]
+        for stage in self.performed:
+            lines.append(f"  ✓ {stage}")
+        for warning in self.warnings:
+            lines.append(f"  – {warning}")
         return lines
 
     def to_dict(self) -> dict[str, Any]:
@@ -131,7 +142,6 @@ def evaluate_run_readiness(
     whisper_model: str,
     local_ai: str,
     visual_model: str,
-    skip_visual: bool = False,
     skip_transcription: bool = False,
     checking: bool = False,
 ) -> RunReadiness:
@@ -141,9 +151,8 @@ def evaluate_run_readiness(
 
       - **確かめて駄目だったもの**だけを、開始できない理由にする。
         未確認は理由にしない（実際には動くかもしれない）。
-      - その工程を「飛ばす」と利用者が明示したなら、理由から外す。
-      - 説明文は LM Studio が無くても定型文で完了するので、
-        開始できない理由にはせず、**そうなると伝える**。
+      - 文字起こしを「飛ばす」と利用者が明示したなら、理由から外す。
+      - **映像の解析は飛ばせない。** v1 ではこれが本体である。
     """
     readiness = RunReadiness(checking=checking)
     if checking:
@@ -161,24 +170,18 @@ def evaluate_run_readiness(
             remedy="代表画像の抽出に必要です。"
                    "「参照」から ffmpeg.exe の場所を指定してください。"))
 
-    # --- 映像の解析 -------------------------------------------------------
-    if skip_visual:
-        readiness.warnings.append(
-            "映像の解析は行いません（「映像の解析を飛ばす」がオンです）。")
+    # --- 映像の解析（**飛ばせない**）---------------------------------------
+    if local_ai == UNAVAILABLE:
+        readiness.blockers.append(Blocker(
+            problem="ローカルAIに接続できません。",
+            remedy="映像の解析には LM Studio が必要です。"
+                   "LM Studio を起動し、ローカルサーバーを ON にしてください。"))
+    elif visual_model == UNAVAILABLE:
+        readiness.blockers.append(Blocker(
+            problem="映像解析に使うモデルが見つかりません。",
+            remedy="「ローカルAI設定」でモデルを選び直してください。"))
     else:
-        if local_ai == UNAVAILABLE:
-            readiness.blockers.append(Blocker(
-                problem="ローカルAIに接続できません。",
-                remedy="映像の解析を行うには LM Studio を起動して、"
-                       "ローカルサーバーを ON にしてください。",
-                skip_option=SKIP_VISUAL))
-        elif visual_model == UNAVAILABLE:
-            readiness.blockers.append(Blocker(
-                problem="映像解析に使うモデルが見つかりません。",
-                remedy="「ローカルAI設定」でモデルを選び直してください。",
-                skip_option=SKIP_VISUAL))
-        else:
-            readiness.performed.append("映像の解析")
+        readiness.performed.append("映像の解析")
 
     # --- 文字起こし（LM Studio は関係しない）-----------------------------
     if skip_transcription:
@@ -201,17 +204,12 @@ def evaluate_run_readiness(
         else:
             readiness.performed.append("文字起こし")
 
-    # --- 説明文（LM Studio が無くても完了する）---------------------------
+    # --- 説明文 -----------------------------------------------------------
     #
-    # **開始できない理由にしない。** ただし内容が定型文になることは伝える。
-    if local_ai != AVAILABLE and not skip_visual:
-        pass          # 上で既に理由として挙げている
-    elif local_ai != AVAILABLE:
-        readiness.warnings.append(
-            "ローカルAIを使えないため、説明文は決まった文面になります"
-            "（映像の内容は書かれません）。")
-
-    readiness.performed.insert(0, "動画の登録")
+    # 映像の解析を通った時点でローカルAIは使えているので、通常は
+    # そのまま説明文まで到達する。**定型文への切り替えは異常時の保険**
+    # であって、利用者が選ぶ動作モードではない。
+    readiness.performed.insert(0, "動画ライブラリの確認")
     readiness.performed.insert(1, "代表画像の抽出")
     readiness.performed.append("説明文の作成")
 

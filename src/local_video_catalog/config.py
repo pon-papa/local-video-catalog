@@ -126,6 +126,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "run": {
         "time_budget_minutes": 60,
         "max_videos": 0,
+        # **内部専用。** 画面からは変えられない（映像の解析は必須工程）。
         "skip_visual_analysis": False,
         "skip_transcription": False,
         "recycle_cache": False,

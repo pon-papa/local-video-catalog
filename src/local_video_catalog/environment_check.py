@@ -118,13 +118,14 @@ class CheckResult:
             "visual_model": self.availability(VISUAL_MODEL),
         }
 
-    def readiness(self, *, skip_visual: bool = False,
-                  skip_transcription: bool = False
+    def readiness(self, *, skip_transcription: bool = False
                   ) -> readiness_module.RunReadiness:
-        """**開始できるか。** 画面も解析本体もこれを使う。"""
+        """**開始できるか。** 画面も解析本体もこれを使う。
+
+        映像の解析は v1 では必須なので、飛ばす指定は受け付けない。
+        """
         return readiness_module.evaluate_run_readiness(
-            **self.availabilities(), skip_visual=skip_visual,
-            skip_transcription=skip_transcription)
+            **self.availabilities(), skip_transcription=skip_transcription)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -209,8 +210,7 @@ def check_free_space(result: CheckResult) -> None:
         result.add("空き容量", LEVEL_OK, detail)
 
 
-def check_local_ai(result: CheckResult, raw: dict[str, Any], *,
-                   needed: bool) -> None:
+def check_local_ai(result: CheckResult, raw: dict[str, Any]) -> None:
     settings = vlm_client.VlmSettings.from_settings(raw)
     try:
         vlm_client.assert_local_base_url(settings.base_url)
@@ -270,7 +270,6 @@ def check_environment(
     raw: dict[str, Any],
     settings: config_module.Settings,
     source_folder: str | None = None,
-    skip_visual: bool = False,
     skip_transcription: bool = False,
     quick: bool = False,
 ) -> CheckResult:
@@ -284,7 +283,8 @@ def check_environment(
     check_transcription(result, raw,
                         ffmpeg_path=settings.ffmpeg_path if ffmpeg_ok else None,
                         skip=skip_transcription, quick=quick)
-    check_local_ai(result, raw, needed=not skip_visual)
+    # 映像の解析は必須工程なので、常に必要なものとして確かめる。
+    check_local_ai(result, raw)
 
     result.add("保存先", LEVEL_OK, str(paths.userdata_dir()))
     check_free_space(result)
@@ -358,7 +358,6 @@ def build_parser() -> argparse.ArgumentParser:
         description="処理を始める前の環境チェック（読み取り専用・完全ローカル）")
     parser.add_argument("--config")
     parser.add_argument("--source-folder")
-    parser.add_argument("--skip-visual", action="store_true")
     parser.add_argument("--skip-transcription", action="store_true")
     parser.add_argument("--quick", action="store_true",
                         help="時間のかかる確認を省く")
@@ -380,7 +379,6 @@ def run(args: argparse.Namespace) -> int:
     result = check_environment(
         raw=raw, settings=settings,
         source_folder=args.source_folder or raw.get("source_path"),
-        skip_visual=args.skip_visual,
         skip_transcription=args.skip_transcription, quick=args.quick)
 
     if args.json:
@@ -393,7 +391,6 @@ def run(args: argparse.Namespace) -> int:
         print("")
         # **OK / NG だけでなく「いま何ができて、どうすればよいか」を書く。**
         for line in result.readiness(
-                skip_visual=args.skip_visual,
                 skip_transcription=args.skip_transcription).detail_lines():
             print(line)
 

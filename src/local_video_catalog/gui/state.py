@@ -30,7 +30,8 @@ class GuiState:
     max_videos: int = 0
     no_time_limit: bool = False
     no_video_limit: bool = True
-    skip_visual_analysis: bool = False
+    # **「映像の解析」を飛ばす設定は持たない。** v1 では必須工程であり、
+    # 画面に選択肢を出さない。古い設定に残っていても from_dict が捨てる。
     skip_transcription: bool = False
     recycle_cache: bool = False
     visual_model: str = ""
@@ -85,8 +86,6 @@ class GuiState:
             args.append("--recursive")
         args += ["--time-budget-minutes", f"{self.effective_time_budget():g}"]
         args += ["--max-videos", str(self.effective_max_videos())]
-        if self.skip_visual_analysis:
-            args.append("--skip-visual")
         if self.skip_transcription:
             args.append("--skip-transcription")
         if self.recycle_cache:

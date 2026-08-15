@@ -114,17 +114,13 @@ class CatalogWindow:
         ttk.Checkbutton(count_row, text="本数制限なし",
                         variable=self.no_count_var).pack(side="left", padx=(6, 0))
 
-        # **変えた瞬間に開始可否が変わる。** チェックを入れれば、
-        # 環境が足りなくてもその工程を飛ばして進められる。
-        self.skip_visual_var = tk.BooleanVar()
-        ttk.Checkbutton(run_box, text="映像の解析を飛ばす（ローカルAIを使わない）",
-                        variable=self.skip_visual_var,
-                        command=self._on_skip_changed
-                        ).pack(anchor="w", pady=(6, 0))
+        # **「映像の解析」を飛ばす選択肢は出さない。** v1 では必須工程。
+        # 文字起こしだけが任意で、変えた瞬間に開始可否が変わる。
         self.skip_asr_var = tk.BooleanVar()
         ttk.Checkbutton(run_box, text="文字起こしを飛ばす",
                         variable=self.skip_asr_var,
-                        command=self._on_skip_changed).pack(anchor="w")
+                        command=self._on_skip_changed
+                        ).pack(anchor="w", pady=(6, 0))
         self.recycle_var = tk.BooleanVar()
         ttk.Checkbutton(run_box,
                         text="完了した動画の中間ファイルをゴミ箱へ移動する",
@@ -190,7 +186,6 @@ class CatalogWindow:
         self.videos_var.set(self.state.max_videos or 10)
         self.no_time_var.set(self.state.no_time_limit)
         self.no_count_var.set(self.state.no_video_limit)
-        self.skip_visual_var.set(self.state.skip_visual_analysis)
         self.skip_asr_var.set(self.state.skip_transcription)
         self.recycle_var.set(self.state.recycle_cache)
 
@@ -202,7 +197,6 @@ class CatalogWindow:
             max_videos=int(self.videos_var.get() or 0),
             no_time_limit=self.no_time_var.get(),
             no_video_limit=self.no_count_var.get(),
-            skip_visual_analysis=self.skip_visual_var.get(),
             skip_transcription=self.skip_asr_var.get(),
             recycle_cache=self.recycle_var.get(),
             visual_model=self.state.visual_model,
@@ -350,7 +344,6 @@ class CatalogWindow:
                 checking=True)
         return readiness_module.evaluate_run_readiness(
             **self.availability,
-            skip_visual=bool(self.skip_visual_var.get()),
             skip_transcription=bool(self.skip_asr_var.get()))
 
     def _refresh_readiness(self, *_event: object) -> None:
@@ -381,6 +374,12 @@ class CatalogWindow:
         self.root.update_idletasks()
         result = runner_module.preview_targets(state.pipeline_arguments())
         for line in result.lines:
+            self._append(line)
+
+        # **今回なにを行うのかを、開始前にはっきり見せる。**
+        # 「映像の解析」は必須工程なので常に並ぶ。飛ばす工程はその旨を出す。
+        self._append("")
+        for line in self._readiness().stage_lines():
             self._append(line)
 
         # 状況説明欄にも要点を出す。ログを読まなくても分かるように。
@@ -425,6 +424,9 @@ class CatalogWindow:
 
         state = self._collect_state()
         self._clear_log()
+        for line in readiness.stage_lines():
+            self._append(line)
+        self._append("")
         self.status_var.set(RUNNING_MESSAGE)
         self.task = runner_module.start_analysis(
             [*state.pipeline_arguments(), *(extra or [])])

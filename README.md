@@ -61,12 +61,19 @@ local-video-catalog\              ← APP_ROOT
 | Windows 10 / 11 | 動作環境 | |
 | Python 3.13 以降 | アプリ本体 | サードパーティパッケージは不要 |
 | ffmpeg / ffprobe（8.x 以降のフル版） | 動画情報の取得・静止画抽出・文字起こし | **whisper フィルターを含むビルドが必要** |
-| LM Studio | 映像内容の解析と説明文の生成 | ローカルサーバーを ON にして使います |
-| VLM モデル | 映像内容の解析 | 動作確認済み: `qwen3-vl-8b-instruct` |
-| Whisper モデル（`ggml-*.bin`） | 文字起こし | 動作確認済み: `ggml-large-v3-turbo-q5_0.bin` |
+| LM Studio | 映像内容の解析と説明文の生成 | **必須。** ローカルサーバーを ON にして使います |
+| VLM モデル | 映像内容の解析 | **必須。** 動作確認済み: `qwen3-vl-8b-instruct` |
+| Whisper モデル（`ggml-*.bin`） | 文字起こし | 文字起こしを行う場合のみ。動作確認済み: `ggml-large-v3-turbo-q5_0.bin` |
 
 VLM モデルと Whisper モデルは**同梱していません**。ご自身で用意して、
 Whisper モデルは `userdata\models\whisper\` へ置いてください。
+
+**映像の解析は必ず行う工程です。** このツールの中心なので、飛ばす設定はありません。
+LM Studio と VLM モデルが使えないあいだは「処理開始」を押せません
+（動画ライブラリの確認・HTMLカタログの閲覧・説明文の確認・設定変更はいつでもできます）。
+
+**文字起こしは任意です。** whisper 対応の ffmpeg や Whisper モデルが無い場合は、
+「文字起こしを飛ばす」にチェックを入れれば、そのほかの工程は進められます。
 
 ---
 

@@ -13,6 +13,12 @@
 規則:
     足りない環境 ＋ その工程を行う設定  → 開始できない
     足りない環境 ＋ 「飛ばす」を明示     → 開始できる
+
+v1 の簡素化（**映像の解析は必須工程**）:
+
+    映像の解析はこのツールの本体なので、飛ばす選択肢を画面に出さない。
+    LM Studio が使えないなら開始できない。「飛ばせば開始できます」とも
+    案内しない（案内した先に、意味のある結果が無いため）。
 """
 
 from __future__ import annotations
@@ -35,7 +41,7 @@ ALL_OK = {
 def evaluate(**overrides) -> rd.RunReadiness:
     values = dict(ALL_OK)
     skips = {key: overrides.pop(key) for key in
-             ("skip_visual", "skip_transcription", "checking")
+             ("skip_transcription", "checking")
              if key in overrides}
     values.update(overrides)
     return rd.evaluate_run_readiness(**values, **skips)
@@ -58,47 +64,52 @@ class HappyPathTests(unittest.TestCase):
 
 
 class LocalAiTests(unittest.TestCase):
-    """B / C. LM Studio 未接続のとき。"""
+    """B / C. LM Studio 未接続のとき — **飛ばせないので開始できない。**"""
 
-    def test_without_skip_the_run_is_blocked(self) -> None:
+    def test_the_run_is_blocked(self) -> None:
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
                              visual_model=rd.UNAVAILABLE)
         self.assertFalse(readiness.can_start)
         self.assertTrue(readiness.blockers)
 
-    def test_the_blocker_names_the_skip_that_resolves_it(self) -> None:
+    def test_the_blocker_says_to_start_lm_studio(self) -> None:
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
                              visual_model=rd.UNAVAILABLE)
-        blocker = readiness.blockers[0]
-        self.assertEqual(blocker.skip_option, rd.SKIP_VISUAL)
-        text = "\n".join(blocker.lines())
-        self.assertIn("映像の解析を飛ばす", text)
+        text = "\n".join(readiness.blockers[0].lines())
         self.assertIn("LM Studio", text)
+        self.assertIn("ローカルサーバー", text)
 
-    def test_skipping_visual_allows_starting(self) -> None:
+    def test_no_advice_to_skip_the_visual_analysis(self) -> None:
+        """**「映像の解析を飛ばせば開始できます」と言わない。**"""
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
-                             visual_model=rd.UNAVAILABLE, skip_visual=True)
-        self.assertTrue(readiness.can_start)
+                             visual_model=rd.UNAVAILABLE)
+        self.assertEqual(readiness.blockers[0].skip_option, "")
+        text = "\n".join(readiness.detail_lines())
+        self.assertNotIn("映像の解析を飛ばす", text)
 
-    def test_skipping_visual_warns_that_descriptions_are_templates(self) -> None:
-        """**説明文は LM Studio 無しでも完了する。** ただし定型文になる。"""
+    def test_skipping_transcription_does_not_unblock_it(self) -> None:
+        """文字起こしを飛ばしても、映像の解析の不足は解消しない。"""
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
-                             visual_model=rd.UNAVAILABLE, skip_visual=True)
-        text = "\n".join(readiness.warnings)
-        self.assertIn("決まった文面", text)
+                             visual_model=rd.UNAVAILABLE,
+                             skip_transcription=True)
+        self.assertFalse(readiness.can_start)
 
     def test_local_ai_never_blocks_transcription(self) -> None:
         """**文字起こしは LM Studio を使わない。** 巻き添えにしない。"""
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
-                             visual_model=rd.UNAVAILABLE, skip_visual=True)
-        self.assertIn("文字起こし", readiness.performed)
+                             visual_model=rd.UNAVAILABLE)
         text = "\n".join(readiness.detail_lines())
         self.assertNotIn("文字起こし機能を利用できません", text)
 
     def test_model_missing_is_treated_like_no_connection(self) -> None:
         readiness = evaluate(visual_model=rd.UNAVAILABLE)
         self.assertFalse(readiness.can_start)
-        self.assertEqual(readiness.blockers[0].skip_option, rd.SKIP_VISUAL)
+        self.assertEqual(readiness.blockers[0].skip_option, "")
+        self.assertIn("モデル", readiness.blockers[0].problem)
+
+    def test_unknown_local_ai_still_lets_the_run_start(self) -> None:
+        """未確認は「使えない」ではない。必須工程でも同じ。"""
+        self.assertTrue(evaluate(local_ai=rd.UNKNOWN).can_start)
 
 
 class TranscriptionTests(unittest.TestCase):
@@ -129,39 +140,41 @@ class TranscriptionTests(unittest.TestCase):
 class BothMissingTests(unittest.TestCase):
     """F / G. 両方使えないとき。"""
 
-    def test_neither_skipped_blocks_with_two_reasons(self) -> None:
+    def test_two_reasons_are_shown(self) -> None:
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
                              visual_model=rd.UNAVAILABLE,
                              whisper_feature=rd.UNAVAILABLE)
         self.assertFalse(readiness.can_start)
         self.assertEqual(len(readiness.blockers), 2)
 
-    def test_both_skipped_still_starts(self) -> None:
-        """登録・代表画像・説明文（定型文）は成立する。"""
+    def test_skipping_transcription_leaves_the_visual_reason(self) -> None:
+        """**飛ばせるのは文字起こしだけ。** 片方だけ消える。"""
         readiness = evaluate(local_ai=rd.UNAVAILABLE,
                              visual_model=rd.UNAVAILABLE,
                              whisper_feature=rd.UNAVAILABLE,
-                             skip_visual=True, skip_transcription=True)
-        self.assertTrue(readiness.can_start)
-        self.assertIn("動画の登録", readiness.performed)
-        self.assertIn("代表画像の抽出", readiness.performed)
-        self.assertIn("説明文の作成", readiness.performed)
+                             skip_transcription=True)
+        self.assertFalse(readiness.can_start)
+        self.assertEqual(len(readiness.blockers), 1)
+        self.assertIn("ローカルAI", readiness.blockers[0].problem)
 
 
 class FoundationTests(unittest.TestCase):
     """飛ばせない土台。"""
 
     def test_missing_ffprobe_cannot_be_skipped(self) -> None:
-        readiness = evaluate(ffprobe=rd.UNAVAILABLE, skip_visual=True,
-                             skip_transcription=True)
+        readiness = evaluate(ffprobe=rd.UNAVAILABLE, skip_transcription=True)
         self.assertFalse(readiness.can_start)
         self.assertEqual(readiness.blockers[0].skip_option, "")
 
     def test_missing_ffmpeg_cannot_be_skipped(self) -> None:
-        readiness = evaluate(ffmpeg=rd.UNAVAILABLE, skip_visual=True,
-                             skip_transcription=True)
+        readiness = evaluate(ffmpeg=rd.UNAVAILABLE, skip_transcription=True)
         self.assertFalse(readiness.can_start)
         self.assertEqual(readiness.blockers[0].skip_option, "")
+
+    def test_only_the_transcription_is_skippable(self) -> None:
+        """**画面に出す「飛ばす」は 1 つだけ。**"""
+        self.assertEqual(set(rd.SKIP_LABELS), {rd.SKIP_TRANSCRIPTION})
+        self.assertFalse(hasattr(rd, "SKIP_VISUAL"))
 
 
 class UnknownTests(unittest.TestCase):
@@ -210,13 +223,77 @@ class MessageTests(unittest.TestCase):
                                   visual_model=rd.UNAVAILABLE).detail_lines())
         self.assertIn("現在は解析を開始できません", text)
         self.assertIn("LM Studio を起動", text)
-        self.assertIn("チェックを入れる", text)
+        self.assertNotIn("チェックを入れる", text)
 
     def test_browsing_is_always_offered(self) -> None:
         for readiness in (evaluate(), evaluate(ffmpeg=rd.UNAVAILABLE)):
             with self.subTest(can_start=readiness.can_start):
                 self.assertIn("いつでもできます",
                               "\n".join(readiness.detail_lines()))
+
+
+class StageListTests(unittest.TestCase):
+    """I. **今回なにを行うのかが見えること。**
+
+    「対象確認」と開始前に、行う工程と行わない工程を並べて出す。
+    """
+
+    def test_every_stage_is_named(self) -> None:
+        text = "\n".join(evaluate().stage_lines())
+        for stage in ("動画ライブラリの確認", "代表画像の抽出", "映像の解析",
+                      "文字起こし", "説明文の作成"):
+            with self.subTest(stage=stage):
+                self.assertIn(stage, text)
+
+    def test_the_visual_analysis_is_always_listed_when_startable(self) -> None:
+        self.assertIn("映像の解析", evaluate(skip_transcription=True).performed)
+
+    def test_a_skipped_stage_is_shown_as_not_performed(self) -> None:
+        readiness = evaluate(skip_transcription=True)
+        self.assertNotIn("文字起こし", readiness.performed)
+        text = "\n".join(readiness.stage_lines())
+        self.assertIn("文字起こしは行いません", text)
+
+    def test_detail_lines_include_the_stage_list(self) -> None:
+        text = "\n".join(evaluate().detail_lines())
+        self.assertIn("今回行う工程", text)
+        self.assertIn("映像の解析", text)
+
+
+class InternalOptionTests(unittest.TestCase):
+    """J. 画面から消しても、**内部の飛ばす仕組みは残す。**
+
+    LM Studio を用意できない試験環境で処理全体を通すために必要。
+    利用者へは見せない。
+    """
+
+    def _read(self, *parts: str) -> str:
+        return (APP_ROOT.joinpath("src", "local_video_catalog", *parts)
+                ).read_text(encoding="utf-8")
+
+    def test_the_pipeline_still_accepts_the_internal_flag(self) -> None:
+        self.assertIn("--skip-visual", self._read("pipeline.py"))
+
+    def test_the_gui_state_no_longer_carries_it(self) -> None:
+        source = self._read("gui", "state.py")
+        tree = ast.parse(source)
+        state = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.ClassDef) and node.name == "GuiState")
+        names = [node.target.id for node in state.body
+                 if isinstance(node, ast.AnnAssign)]
+        self.assertNotIn("skip_visual_analysis", names)
+
+    def test_the_gui_never_passes_the_internal_flag(self) -> None:
+        self.assertNotIn("--skip-visual", self._read("gui", "state.py"))
+        self.assertNotIn("--skip-visual", self._read("gui", "app.py"))
+
+    def test_an_old_saved_state_cannot_re_enable_it(self) -> None:
+        """古い設定ファイルに残っていても、黙って飛ばしたりしない。"""
+        from local_video_catalog.gui import state as state_module
+
+        state = state_module.GuiState.from_dict({"skip_visual_analysis": True})
+        self.assertFalse(hasattr(state, "skip_visual_analysis"))
+        self.assertNotIn("--skip-visual", state.pipeline_arguments())
 
 
 class StageDependencyTests(unittest.TestCase):
@@ -270,6 +347,15 @@ class SingleSourceOfTruthTests(unittest.TestCase):
 
     def test_gui_delegates_to_evaluate_run_readiness(self) -> None:
         self.assertIn("evaluate_run_readiness", self.source)
+
+    def test_the_visual_skip_checkbox_is_gone(self) -> None:
+        """G. **画面に「映像の解析を飛ばす」を出さない。**"""
+        self.assertNotIn("映像の解析を飛ばす", self.source)
+        self.assertNotIn("skip_visual_var", self.source)
+
+    def test_the_transcription_checkbox_remains(self) -> None:
+        self.assertIn('text="文字起こしを飛ばす"', self.source)
+        self.assertIn("skip_asr_var", self.source)
 
     def test_checkbox_changes_refresh_immediately(self) -> None:
         self.assertIn("command=self._on_skip_changed", self.source)
