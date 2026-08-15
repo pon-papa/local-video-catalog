@@ -29,6 +29,7 @@ from typing import Any
 from . import asr_engine
 from . import config as config_module
 from . import paths, vlm_client
+from . import readiness as readiness_module
 from .logging_utils import configure_stdio_utf8
 
 LEVEL_OK = "OK"
@@ -58,57 +59,12 @@ class CheckItem:
 
 
 ESSENTIAL_FOR_ANALYSIS = ("ffmpeg", "ffprobe")
-"""これが無いと、新しい解析を始められない。"""
+"""これが無いと、どの工程も始められない。飛ばすこともできない。"""
 
-NEEDED_FOR_VISUAL = ("ローカルAI", "映像解析モデル")
-NEEDED_FOR_TRANSCRIPTION = ("whisper 機能", "文字起こしモデル")
-
-
-@dataclass
-class Capabilities:
-    """**いま何ができて、何ができないか。**
-
-    単なる OK/NG ではなく、利用者が次に何をすればよいか分かるようにする。
-    LM Studio が止まっていても、カタログを見ることはできる。
-    """
-
-    can_register: bool = False
-    can_analyse_visual: bool = False
-    can_transcribe: bool = False
-    can_browse: bool = True
-    blockers: list[str] = field(default_factory=list)
-
-    @property
-    def can_start(self) -> bool:
-        """「処理開始」を押してよいか。
-
-        映像解析や文字起こしは飛ばせるので、**登録さえできれば始められる。**
-        """
-        return self.can_register
-
-    def summary_lines(self) -> list[str]:
-        lines: list[str] = []
-        if self.can_register and self.can_analyse_visual and self.can_transcribe:
-            lines.append("解析を開始できます。")
-            return lines
-
-        if not self.can_register:
-            lines.append("新しい解析を開始できません。")
-            lines.append("ffmpeg と ffprobe の場所を指定してください。")
-        else:
-            missing = []
-            if not self.can_analyse_visual:
-                missing.append("映像の解析")
-            if not self.can_transcribe:
-                missing.append("文字起こし")
-            lines.append(f"{'と'.join(missing)}はできません。"
-                         "それ以外は開始できます。")
-            for blocker in self.blockers:
-                lines.append(f"  → {blocker}")
-        lines.append("")
-        lines.append("動画ライブラリの確認、HTMLカタログの閲覧、"
-                     "説明文の確認はいつでもできます。")
-        return lines
+WHISPER_FEATURE = "whisper 機能"
+WHISPER_MODEL = "文字起こしモデル"
+LOCAL_AI = "ローカルAI"
+VISUAL_MODEL = "映像解析モデル"
 
 
 @dataclass
@@ -141,37 +97,41 @@ class CheckResult:
         item = self.find(name)
         return item is not None and item.level == LEVEL_OK
 
-    def capabilities(self) -> Capabilities:
-        """**いま何ができるか**へ翻訳する。"""
-        found = Capabilities()
-        found.can_register = all(self.is_ok(name)
-                                 for name in ESSENTIAL_FOR_ANALYSIS)
-        found.can_analyse_visual = all(self.is_ok(name)
-                                       for name in NEEDED_FOR_VISUAL)
-        found.can_transcribe = all(self.is_ok(name)
-                                   for name in NEEDED_FOR_TRANSCRIPTION)
+    def availability(self, name: str) -> str:
+        """その項目の可用性（3 値）。
 
-        for name in (*ESSENTIAL_FOR_ANALYSIS, *NEEDED_FOR_VISUAL,
-                     *NEEDED_FOR_TRANSCRIPTION):
-            item = self.find(name)
-            if item is not None and item.level != LEVEL_OK and item.advice:
-                if item.advice not in found.blockers:
-                    found.blockers.append(item.advice)
-        return found
+        **確かめていない項目を「利用不可」にしない。**
+        """
+        item = self.find(name)
+        if item is None:
+            return readiness_module.UNKNOWN
+        return readiness_module.availability_from_level(
+            item.level, ok_level=LEVEL_OK, warn_level=LEVEL_WARN)
+
+    def availabilities(self) -> dict[str, str]:
+        return {
+            "ffmpeg": self.availability("ffmpeg"),
+            "ffprobe": self.availability("ffprobe"),
+            "whisper_feature": self.availability(WHISPER_FEATURE),
+            "whisper_model": self.availability(WHISPER_MODEL),
+            "local_ai": self.availability(LOCAL_AI),
+            "visual_model": self.availability(VISUAL_MODEL),
+        }
+
+    def readiness(self, *, skip_visual: bool = False,
+                  skip_transcription: bool = False
+                  ) -> readiness_module.RunReadiness:
+        """**開始できるか。** 画面も解析本体もこれを使う。"""
+        return readiness_module.evaluate_run_readiness(
+            **self.availabilities(), skip_visual=skip_visual,
+            skip_transcription=skip_transcription)
 
     def to_dict(self) -> dict[str, Any]:
-        capabilities = self.capabilities()
         return {
             "level": self.level, "ok": self.level != LEVEL_NG,
             "items": [i.to_dict() for i in self.items],
             "blocking": [i.to_dict() for i in self.blocking],
-            "capabilities": {
-                "can_register": capabilities.can_register,
-                "can_analyse_visual": capabilities.can_analyse_visual,
-                "can_transcribe": capabilities.can_transcribe,
-                "can_start": capabilities.can_start,
-                "blockers": list(capabilities.blockers),
-            },
+            "availability": self.availabilities(),
         }
 
 
@@ -261,10 +221,10 @@ def check_local_ai(result: CheckResult, raw: dict[str, Any], *,
 
     available, error = list_local_models(settings.base_url)
     if error:
-        level = LEVEL_NG if needed else LEVEL_WARN
-        tail = ("映像解析と説明文の生成に必要です。" if needed
-                else "今回は使わない設定なので、このままでも進められます。")
-        result.add("ローカルAI", level, "未接続", f"{error}{tail}")
+        # **確かめて駄目だったので「利用不可」。**
+        # 飛ばす設定なら開始してよいかは readiness が決める。
+        # ここで「注意」に落とすと、未確認と区別できなくなる。
+        result.add("ローカルAI", LEVEL_NG, "未接続", error)
         return
 
     result.add("ローカルAI", LEVEL_OK, f"接続済み（{len(available)} モデル）")
@@ -272,16 +232,16 @@ def check_local_ai(result: CheckResult, raw: dict[str, Any], *,
         chosen = vlm_client.select_model(available, settings.model_match)
         result.add("映像解析モデル", LEVEL_OK, chosen)
     except vlm_client.ModelSelectionError as exc:
-        result.add("映像解析モデル", LEVEL_NG if needed else LEVEL_WARN,
-                   settings.model_match, str(exc))
+        result.add("映像解析モデル", LEVEL_NG, settings.model_match, str(exc))
 
 
 def check_transcription(result: CheckResult, raw: dict[str, Any], *,
                         ffmpeg_path: Path | None, skip: bool,
                         quick: bool) -> None:
-    if skip:
-        result.add("文字起こし", LEVEL_OK, "今回は行いません")
-        return
+    """文字起こしの環境。**LM Studio は関係しない。**
+
+    必要なのは ffmpeg・その whisper 機能・モデルの 3 つだけ。
+    """
 
     if not ffmpeg_path:
         result.add("whisper 機能", LEVEL_NG, "ffmpeg が無いため確認できません")
@@ -431,8 +391,10 @@ def run(args: argparse.Namespace) -> int:
         for line in format_lines(result):
             print(line)
         print("")
-        # **OK / NG だけでなく「いま何ができるか」を書く。**
-        for line in result.capabilities().summary_lines():
+        # **OK / NG だけでなく「いま何ができて、どうすればよいか」を書く。**
+        for line in result.readiness(
+                skip_visual=args.skip_visual,
+                skip_transcription=args.skip_transcription).detail_lines():
             print(line)
 
     return EXIT_NG if result.level == LEVEL_NG else EXIT_OK

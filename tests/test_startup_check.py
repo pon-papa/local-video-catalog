@@ -10,6 +10,7 @@ from pathlib import Path
 from _support import APP_ROOT, TempAppRootTestCase
 
 from local_video_catalog import environment_check as ec
+from local_video_catalog import readiness as rd
 
 
 def _result(**levels: str) -> ec.CheckResult:
@@ -21,81 +22,78 @@ def _result(**levels: str) -> ec.CheckResult:
     return result
 
 
-class CapabilityTests(unittest.TestCase):
-    """**OK/NG ではなく「何ができるか」で伝える。**"""
+class AvailabilityTests(unittest.TestCase):
+    """環境チェックの 3 段階を、3 値の可用性へ正しく直すこと。
 
-    def _full(self, **overrides: str) -> ec.CheckResult:
-        levels = {
-            "ffmpeg": ec.LEVEL_OK, "ffprobe": ec.LEVEL_OK,
-            "whisper 機能": ec.LEVEL_OK, "文字起こしモデル": ec.LEVEL_OK,
-            "ローカルAI": ec.LEVEL_OK, "映像解析モデル": ec.LEVEL_OK,
-        }
-        levels.update(overrides)
+    **「注意（未確認）」を「利用不可」にしない。** 実運用では起動時の
+    確認が --quick だったせいで whisper 機能が「未確認」になり、それを
+    「利用不可」と読んで「文字起こしはできません」と誤表示していた。
+    """
+
+    def _result(self, **levels: str) -> ec.CheckResult:
         result = ec.CheckResult()
         for name, level in levels.items():
-            result.add(name, level, "",
-                       "" if level == ec.LEVEL_OK else f"{name} を用意してください。")
+            result.add(name, level, "", "" if level == ec.LEVEL_OK else "対処")
         return result
 
-    def test_everything_available(self) -> None:
-        capabilities = self._full().capabilities()
-        self.assertTrue(capabilities.can_start)
-        self.assertTrue(capabilities.can_analyse_visual)
-        self.assertTrue(capabilities.can_transcribe)
-        self.assertIn("解析を開始できます",
-                      "\n".join(capabilities.summary_lines()))
+    def test_ok_becomes_available(self) -> None:
+        result = self._result(ffmpeg=ec.LEVEL_OK)
+        self.assertEqual(result.availability("ffmpeg"), rd.AVAILABLE)
 
-    def test_lm_studio_down_still_allows_starting(self) -> None:
-        """**LM Studio が止まっていても、登録と文字起こしはできる。**"""
-        capabilities = self._full(
-            **{"ローカルAI": ec.LEVEL_NG}).capabilities()
-        self.assertTrue(capabilities.can_start)
-        self.assertFalse(capabilities.can_analyse_visual)
-        text = "\n".join(capabilities.summary_lines())
-        self.assertIn("映像の解析はできません", text)
-        self.assertIn("それ以外は開始できます", text)
+    def test_ng_becomes_unavailable(self) -> None:
+        result = self._result(ffmpeg=ec.LEVEL_NG)
+        self.assertEqual(result.availability("ffmpeg"), rd.UNAVAILABLE)
 
-    def test_missing_ffmpeg_blocks_starting(self) -> None:
-        capabilities = self._full(ffmpeg=ec.LEVEL_NG).capabilities()
-        self.assertFalse(capabilities.can_start)
-        text = "\n".join(capabilities.summary_lines())
-        self.assertIn("新しい解析を開始できません", text)
+    def test_warn_becomes_unknown_not_unavailable(self) -> None:
+        result = self._result(**{ec.WHISPER_FEATURE: ec.LEVEL_WARN})
+        self.assertEqual(result.availability(ec.WHISPER_FEATURE), rd.UNKNOWN)
 
-    def test_browsing_is_never_blocked(self) -> None:
-        """**閲覧まで禁止しない。**"""
-        for broken in ("ffmpeg", "ffprobe", "ローカルAI", "文字起こしモデル"):
-            with self.subTest(broken=broken):
-                capabilities = self._full(**{broken: ec.LEVEL_NG}).capabilities()
-                self.assertTrue(capabilities.can_browse)
-                self.assertIn("いつでもできます",
-                              "\n".join(capabilities.summary_lines()))
+    def test_absent_item_is_unknown(self) -> None:
+        self.assertEqual(ec.CheckResult().availability("ffmpeg"), rd.UNKNOWN)
 
-    def test_missing_whisper_model_only_blocks_transcription(self) -> None:
-        capabilities = self._full(
-            **{"文字起こしモデル": ec.LEVEL_NG}).capabilities()
-        self.assertTrue(capabilities.can_start)
-        self.assertTrue(capabilities.can_analyse_visual)
-        self.assertFalse(capabilities.can_transcribe)
+    def test_readiness_uses_the_availabilities(self) -> None:
+        result = ec.CheckResult()
+        for name in ("ffmpeg", "ffprobe", ec.WHISPER_FEATURE,
+                     ec.WHISPER_MODEL, ec.LOCAL_AI, ec.VISUAL_MODEL):
+            result.add(name, ec.LEVEL_OK)
+        self.assertTrue(result.readiness().can_start)
 
-    def test_advice_is_carried_into_the_blockers(self) -> None:
-        capabilities = self._full(
-            **{"ローカルAI": ec.LEVEL_NG}).capabilities()
-        self.assertTrue(capabilities.blockers)
-        self.assertIn("ローカルAI", " ".join(capabilities.blockers))
+    def test_local_ai_down_blocks_only_without_skip(self) -> None:
+        result = ec.CheckResult()
+        for name in ("ffmpeg", "ffprobe", ec.WHISPER_FEATURE,
+                     ec.WHISPER_MODEL):
+            result.add(name, ec.LEVEL_OK)
+        result.add(ec.LOCAL_AI, ec.LEVEL_NG, "未接続", "LM Studio を起動")
+        self.assertFalse(result.readiness().can_start)
+        self.assertTrue(result.readiness(skip_visual=True).can_start)
+
+    def test_connection_failure_is_unavailable_regardless_of_skip(self) -> None:
+        """**飛ばす設定でも「利用不可」は「利用不可」。**
+
+        以前は飛ばす設定だと「注意」に落としていたので、未確認と
+        区別できなくなっていた。
+        """
+        from local_video_catalog import config as config_module
+
+        raw = config_module.load_settings_dict()
+        raw["vlm"] = {**raw["vlm"], "base_url": "http://127.0.0.1:9/v1"}
+        result = ec.CheckResult()
+        ec.check_local_ai(result, raw, needed=False)
+        self.assertEqual(result.availability(ec.LOCAL_AI), rd.UNAVAILABLE)
 
 
 class SerialisationTests(TempAppRootTestCase):
-    def test_json_carries_the_capabilities(self) -> None:
+    def test_json_carries_the_availability(self) -> None:
         from local_video_catalog import config as config_module
 
         raw = config_module.load_settings_dict()
         settings = config_module.build_settings(raw, require_ffprobe=False)
         result = ec.check_environment(raw=raw, settings=settings, quick=True)
         payload = json.loads(json.dumps(result.to_dict(), ensure_ascii=False))
-        self.assertIn("capabilities", payload)
-        for key in ("can_register", "can_analyse_visual", "can_transcribe",
-                    "can_start", "blockers"):
-            self.assertIn(key, payload["capabilities"])
+        self.assertIn("availability", payload)
+        for key in ("ffmpeg", "ffprobe", "whisper_feature", "whisper_model",
+                    "local_ai", "visual_model"):
+            self.assertIn(key, payload["availability"])
 
     def test_check_changes_nothing(self) -> None:
         from local_video_catalog import config as config_module

@@ -46,7 +46,7 @@ class CatalogWindow:
     def __init__(self) -> None:
         self.state = state_module.load()
         self.task: runner_module.BackgroundTask | None = None
-        self.capabilities: dict[str, object] | None = None
+        self.availability: dict[str, str] | None = None
         self._environment_queue: "queue.Queue[runner_module.TaskResult]" = (
             queue.Queue())
 
@@ -114,12 +114,17 @@ class CatalogWindow:
         ttk.Checkbutton(count_row, text="本数制限なし",
                         variable=self.no_count_var).pack(side="left", padx=(6, 0))
 
+        # **変えた瞬間に開始可否が変わる。** チェックを入れれば、
+        # 環境が足りなくてもその工程を飛ばして進められる。
         self.skip_visual_var = tk.BooleanVar()
         ttk.Checkbutton(run_box, text="映像の解析を飛ばす（ローカルAIを使わない）",
-                        variable=self.skip_visual_var).pack(anchor="w", pady=(6, 0))
+                        variable=self.skip_visual_var,
+                        command=self._on_skip_changed
+                        ).pack(anchor="w", pady=(6, 0))
         self.skip_asr_var = tk.BooleanVar()
         ttk.Checkbutton(run_box, text="文字起こしを飛ばす",
-                        variable=self.skip_asr_var).pack(anchor="w")
+                        variable=self.skip_asr_var,
+                        command=self._on_skip_changed).pack(anchor="w")
         self.recycle_var = tk.BooleanVar()
         ttk.Checkbutton(run_box,
                         text="完了した動画の中間ファイルをゴミ箱へ移動する",
@@ -212,9 +217,8 @@ class CatalogWindow:
                        self.button_retry):
             button.configure(state="disabled" if running else "normal")
         # **新しい解析ができない環境では、開始だけを無効にする。**
-        # 閲覧や設定は止めない。
-        can_start = (self.capabilities is None
-                     or bool(self.capabilities.get("can_start", True)))
+        # 閲覧や設定は止めない。判定は _readiness に集約している。
+        can_start = self._readiness().can_start
         self.button_start.configure(
             state="disabled" if (running or not can_start) else "normal")
         self.button_stop.configure(state="normal" if running else "disabled")
@@ -265,12 +269,12 @@ class CatalogWindow:
         self.button_env.configure(state="disabled")
         self.button_start.configure(state="disabled")
 
+        # **--quick は使わない。** whisper 機能の確認まで済ませないと
+        # 「未確認」のまま残り、利用者に判断できない状態を見せてしまう。
+        # 確認自体は数秒で終わり、別スレッドなので画面は止まらない。
         arguments = ["--json"]
         if state.source_folder:
             arguments += ["--source-folder", state.source_folder]
-        if automatic:
-            # 起動を待たせないよう、時間のかかる確認は省く。
-            arguments.append("--quick")
 
         def work() -> None:
             self._environment_queue.put(
@@ -318,40 +322,55 @@ class CatalogWindow:
             if item["advice"] and item["level"] != LEVEL_OK:
                 self._append(f"    → {item['advice']}")
 
-        capabilities = dict(payload.get("capabilities") or {})
-        self.capabilities = capabilities
+        self.availability = dict(payload.get("availability") or {})
         self._append("")
+        self._refresh_readiness()
 
-        if capabilities.get("can_start"):
-            if (capabilities.get("can_analyse_visual")
-                    and capabilities.get("can_transcribe")):
-                self._append("解析を開始できます。")
-                self.status_var.set("解析を開始できます。")
-            else:
-                missing = []
-                if not capabilities.get("can_analyse_visual"):
-                    missing.append("映像の解析")
-                if not capabilities.get("can_transcribe"):
-                    missing.append("文字起こし")
-                message = f"{'と'.join(missing)}はできません。"
-                self._append(message + "それ以外は開始できます。")
-                for blocker in capabilities.get("blockers", []):
-                    self._append(f"  → {blocker}")
-                self._append("")
-                self._append("動画ライブラリの確認、HTMLカタログの閲覧、"
-                             "説明文の確認はいつでもできます。")
-                self.status_var.set(message)
-            self.button_start.configure(state="normal")
-        else:
-            self._append("新しい解析を開始できません。")
-            for blocker in capabilities.get("blockers", []):
-                self._append(f"  → {blocker}")
-            self._append("")
-            self._append("HTMLカタログの閲覧や説明文の確認はできます。")
-            self.status_var.set(
-                "新しい解析を開始できません。上の項目を直してください。")
-            # **閲覧までは止めない。** 開始だけを無効にする。
-            self.button_start.configure(state="disabled")
+    def _on_skip_changed(self) -> None:
+        """飛ばす設定が変わったら、開始可否と説明をその場で更新する。"""
+        readiness = self._refresh_readiness()
+        if self.availability is None:
+            return
+        self._clear_log()
+        for line in readiness.detail_lines():
+            self._append(line)
+
+    def _readiness(self):
+        """**開始できるか。** 画面と解析本体で同じ判定を使う。"""
+        from .. import readiness as readiness_module
+
+        if self.availability is None:
+            return readiness_module.evaluate_run_readiness(
+                ffmpeg=readiness_module.UNKNOWN,
+                ffprobe=readiness_module.UNKNOWN,
+                whisper_feature=readiness_module.UNKNOWN,
+                whisper_model=readiness_module.UNKNOWN,
+                local_ai=readiness_module.UNKNOWN,
+                visual_model=readiness_module.UNKNOWN,
+                checking=True)
+        return readiness_module.evaluate_run_readiness(
+            **self.availability,
+            skip_visual=bool(self.skip_visual_var.get()),
+            skip_transcription=bool(self.skip_asr_var.get()))
+
+    def _refresh_readiness(self, *_event: object) -> None:
+        """チェックを変えた瞬間にも呼ばれ、開始可否と説明を更新する。
+
+        **判定を 1 箇所に集約する。** 画面のあちこちで条件を書くと、
+        表示と実際の可否が食い違う。
+        """
+        readiness = self._readiness()
+        self.status_var.set(readiness.status_line())
+        running = self.task is not None and self.task.running
+        self.button_start.configure(
+            state="normal" if (readiness.can_start and not running)
+            else "disabled")
+        return readiness
+
+    def _explain_readiness(self) -> None:
+        """状況説明欄へ、開始できない理由と対処を書く。"""
+        for line in self._readiness().detail_lines():
+            self._append(line)
 
     def _preview(self) -> None:
         if not self._require_source():
@@ -389,6 +408,21 @@ class CatalogWindow:
     def _start(self, extra: list[str] | None = None) -> None:
         if not self._require_source():
             return
+
+        # **押せてしまった場合でも、ここで必ず確かめる。**
+        # 表示と実際の可否が食い違わないよう、判定は 1 箇所だけ。
+        readiness = self._readiness()
+        if not readiness.can_start:
+            self._clear_log()
+            for line in readiness.detail_lines():
+                self._append(line)
+            self.status_var.set(readiness.status_line())
+            messagebox.showinfo(
+                WINDOW_TITLE,
+                "いまの環境では解析を開始できません。\n"
+                "詳しい理由と対処をログに表示しました。")
+            return
+
         state = self._collect_state()
         self._clear_log()
         self.status_var.set(RUNNING_MESSAGE)
