@@ -454,11 +454,19 @@ def build_settings(
     cache_cfg = settings_dict.get("probe_cache") or {}
     source = settings_dict.get("source_path")
 
-    if require_ffprobe:
+    # **``require_ffprobe=False`` は「探さない」ではない。**
+    # 「見つからなくても例外で止めない」という意味。探し方は同じにする。
+    #
+    # 分けていたせいで、環境チェック（非必須で呼ぶ）だけが隣の
+    # ffprobe を見つけられず、ffmpeg は ✓ なのに ffprobe は ✕、
+    # という食い違いが実機で出た。
+    try:
         ffprobe_path = resolve_ffprobe(settings_dict)
-    else:
-        configured = settings_dict.get("ffprobe_path")
-        ffprobe_path = Path(configured) if configured else Path("ffprobe")
+    except ConfigError:
+        if require_ffprobe:
+            raise
+        # 未検出のまま渡す。判断するのは環境チェックの側。
+        ffprobe_path = Path("ffprobe")
 
     return Settings(
         source_path=Path(source) if source else None,

@@ -102,6 +102,129 @@ class SiblingToolTests(TempDirTestCase):
         self.assertEqual(found, (folder / "ffprobe.exe").resolve())
 
 
+class EnvironmentCheckPathTests(TempDirTestCase):
+    """**実機と同じ経路**で確かめる。
+
+    ここが今回の肝。``resolve_ffprobe()`` の単体試験は通っていたのに、
+    実機の環境チェックでは ffprobe が「見つかりません」のままだった。
+    環境チェックは ``build_settings(require_ffprobe=False)`` を通り、
+    その経路だけ **``resolve_ffprobe()`` を呼んでいなかった**ため。
+
+    **利用者が通る道をそのまま通す試験でないと、同じ穴をまた抜ける。**
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        import os
+
+        self.bin = self.temp_dir / "ffmpeg-full" / "bin"
+        self.bin.mkdir(parents=True, exist_ok=True)
+
+        # PATH をこの bin だけにする＝「PATH から ffmpeg が見つかる」状態
+        self._path = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(self.bin)
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", self._path))
+
+    def place(self, *names: str) -> None:
+        for name in names:
+            (self.bin / name).write_bytes(b"MZ")
+
+    def settings_from(self, **overrides):
+        from local_video_catalog import config as cfg
+
+        raw = dict(cfg.DEFAULT_SETTINGS)
+        raw["ffmpeg_path"] = None
+        raw["ffprobe_path"] = None
+        raw.update(overrides)
+        # **環境チェックと同じ呼び方。**
+        return cfg.build_settings(raw, require_ffprobe=False)
+
+    def levels(self, settings) -> dict:
+        from local_video_catalog import environment_check as ec
+
+        result = ec.CheckResult()
+        ok = ec.check_tool(result, "ffmpeg", settings.ffmpeg_path,
+                           required=True)
+        ec.check_tool(result, "ffprobe", settings.ffprobe_path, required=True)
+        return {item.name: item.level for item in result.items}, ok
+
+    def test_ffmpeg_from_path_brings_its_sibling_ffprobe(self) -> None:
+        """**実機で落ちた形。** PATH の ffmpeg → 同じ bin の ffprobe。"""
+        self.place("ffmpeg.exe", "ffprobe.exe")
+        settings = self.settings_from()
+
+        self.assertEqual(settings.ffmpeg_path, (self.bin / "ffmpeg.exe").resolve())
+        self.assertEqual(settings.ffprobe_path,
+                         (self.bin / "ffprobe.exe").resolve())
+
+        levels, _ = self.levels(settings)
+        from local_video_catalog import environment_check as ec
+
+        self.assertEqual(levels["ffmpeg"], ec.LEVEL_OK)
+        self.assertEqual(levels["ffprobe"], ec.LEVEL_OK,
+                         "隣の ffprobe を見つけられていません。")
+
+    def test_no_sibling_reports_ng_without_crashing(self) -> None:
+        """見つからなくても、環境チェック自体は最後まで走ること。"""
+        self.place("ffmpeg.exe")                  # ffprobe は置かない
+        settings = self.settings_from()           # 例外を投げない
+        levels, _ = self.levels(settings)
+        from local_video_catalog import environment_check as ec
+
+        self.assertEqual(levels["ffmpeg"], ec.LEVEL_OK)
+        self.assertEqual(levels["ffprobe"], ec.LEVEL_NG)
+
+    def test_an_explicit_ffprobe_still_wins(self) -> None:
+        """明示設定はいちばん強いまま。"""
+        self.place("ffmpeg.exe", "ffprobe.exe")
+        other = self.temp_dir / "別の場所"
+        other.mkdir(parents=True, exist_ok=True)
+        (other / "ffprobe.exe").write_bytes(b"MZ")
+
+        settings = self.settings_from(ffprobe_path=str(other / "ffprobe.exe"))
+        self.assertEqual(settings.ffprobe_path,
+                         (other / "ffprobe.exe").resolve())
+
+    def test_both_on_path_is_fine(self) -> None:
+        self.place("ffmpeg.exe", "ffprobe.exe")
+        settings = self.settings_from()
+        levels, _ = self.levels(settings)
+        from local_video_catalog import environment_check as ec
+
+        self.assertEqual(levels["ffmpeg"], ec.LEVEL_OK)
+        self.assertEqual(levels["ffprobe"], ec.LEVEL_OK)
+
+    def test_nothing_found_does_not_raise(self) -> None:
+        """**非必須モードは例外にしない。** 判断は環境チェックへ渡す。"""
+        settings = self.settings_from()           # bin は空
+        levels, _ = self.levels(settings)
+        from local_video_catalog import environment_check as ec
+
+        self.assertEqual(levels["ffprobe"], ec.LEVEL_NG)
+
+    def test_the_required_mode_still_raises(self) -> None:
+        """解析の入口では、無ければこれまでどおり止める。"""
+        from local_video_catalog import config as cfg
+
+        raw = dict(cfg.DEFAULT_SETTINGS)
+        raw["ffmpeg_path"] = None
+        raw["ffprobe_path"] = None
+        with self.assertRaises(cfg.ConfigError):
+            cfg.build_settings(raw, require_ffprobe=True)
+
+    def test_both_modes_resolve_the_same_way(self) -> None:
+        """**探し方を 2 つ持たない。** 分けたせいで食い違った。"""
+        self.place("ffmpeg.exe", "ffprobe.exe")
+        from local_video_catalog import config as cfg
+
+        raw = dict(cfg.DEFAULT_SETTINGS)
+        raw["ffmpeg_path"] = None
+        raw["ffprobe_path"] = None
+        self.assertEqual(
+            cfg.build_settings(raw, require_ffprobe=False).ffprobe_path,
+            cfg.build_settings(raw, require_ffprobe=True).ffprobe_path)
+
+
 class TranscriptionIsNeverSilentlySkippedTests(unittest.TestCase):
     """C. **利用者の意思**と、環境不足による自動省略を分ける。"""
 
