@@ -27,6 +27,17 @@ SCOPE_FULL = "full"
 NOTE_PREFIX = "参考: "
 
 
+def _interrupted_message(done_chunks: int, planned_chunks: int) -> str:
+    """途中で終わったことを、失敗と読めない言葉で書く。
+
+    実運用で「チャンク失敗 0 件」なのに「失敗しました」と出た。
+    **止めただけなのか、うまくいかなかったのかを混ぜない。**
+    """
+    return (f"止めたため文字起こしを途中で終了しました。"
+            f"{planned_chunks} チャンク中 {done_chunks} チャンク完了。"
+            "次回は残りから再開します。")
+
+
 def label_note(message: str) -> str:
     """診断メッセージへ「参考:」を付ける。**二重に付けない。**
 
@@ -219,10 +230,9 @@ def run_transcription(asset_id: str, context) -> "pipeline_module.StageOutcome":
                 "failed_chunk_count": failed,
                 "error_message": "処理できたチャンクがありません。"})
         if interrupted:
-            return pipeline_module.StageOutcome(
-                done=False, status=db_module.STATUS_INTERRUPTED,
-                failure_kind=pipeline_module.FAILURE_OTHER,
-                message="中断されました。次回は続きから処理します。")
+            return pipeline_module.StageOutcome.stopped(
+                db_module.STATUS_INTERRUPTED,
+                _interrupted_message(processed + reused, len(planned)))
         return outcome.failed(pipeline_module.FAILURE_OTHER,
                               "処理できたチャンクがありません。")
 

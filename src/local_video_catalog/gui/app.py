@@ -19,6 +19,7 @@ import json
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -33,6 +34,14 @@ from . import state as state_module
 WINDOW_TITLE = "動画カタログ"
 POLL_INTERVAL_MS = 200
 RUNNING_MESSAGE = "処理中です。画面は閉じずにお待ちください。"
+
+
+def format_duration(seconds: float) -> str:
+    """``HH:MM:SS``。長時間の実行でも桁が増えるだけで崩れない。"""
+    total = int(max(0.0, seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def open_in_explorer(target: Path, *, select: bool = False) -> None:
@@ -55,6 +64,9 @@ class CatalogWindow:
         self.task: runner_module.BackgroundTask | None = None
         self.availability: dict[str, str] | None = None
         self.checking_reason = ""
+        self.started_at: float | None = None
+        self.budget_seconds: float = 0.0
+        self._clock_job: str | None = None
         self._environment_queue: "queue.Queue[runner_module.TaskResult]" = (
             queue.Queue())
 
@@ -171,8 +183,15 @@ class CatalogWindow:
         self.button_stop.pack(side="left", padx=6)
 
         # 進み具合
+        progress_head = ttk.Frame(outer)
+        progress_head.pack(fill="x")
         self.status_var = tk.StringVar(value="準備ができています。")
-        ttk.Label(outer, textvariable=self.status_var).pack(anchor="w")
+        ttk.Label(progress_head, textvariable=self.status_var).pack(side="left")
+        # **経過時間はログへ流さない。** 毎秒 1 行増えると、肝心の
+        # 進行がすぐ流れて見えなくなる。ここを書き換えるだけにする。
+        self.elapsed_var = tk.StringVar(value="")
+        ttk.Label(progress_head, textvariable=self.elapsed_var,
+                  foreground="gray").pack(side="right")
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
         self.progress.pack(fill="x", pady=(4, 8))
 
@@ -485,7 +504,51 @@ class CatalogWindow:
             self.status_var.set("処理を開始できませんでした。")
             return
         self._set_running(True)
+        # **解析へ渡したのと同じ稼働時間を使う。** 画面だけ別の値を
+        # 持つと、表示の残り時間と実際の締め切りが食い違う。
+        self._start_clock(state.effective_time_budget() * 60)
         self.root.after(POLL_INTERVAL_MS, self._poll)
+
+    # -- 経過時間 ---------------------------------------------------------
+
+    def _start_clock(self, budget_seconds: float) -> None:
+        self.started_at = time.monotonic()
+        self.budget_seconds = max(0.0, float(budget_seconds))
+        self._tick()
+
+    def _tick(self) -> None:
+        """1 秒ごとに表示だけ書き換える。**ログには何も足さない。**"""
+        if self.started_at is None:
+            return
+        self.elapsed_var.set(self._clock_text())
+        if self.task is not None and self.task.running:
+            self._clock_job = self.root.after(1000, self._tick)
+        else:
+            self._clock_job = None
+
+    def _clock_text(self) -> str:
+        """経過（と、稼働時間があれば残り）。終了後も最後の値が残る。"""
+        if self.started_at is None:
+            return ""
+        elapsed = max(0.0, time.monotonic() - self.started_at)
+        if self.budget_seconds <= 0:
+            # 制限が無いなら残りは存在しない。**書かない。**
+            return f"経過 {format_duration(elapsed)}"
+        remaining = max(0.0, self.budget_seconds - elapsed)
+        return (f"経過 {format_duration(elapsed)}"
+                f" / {format_duration(self.budget_seconds)}"
+                f"    残り {format_duration(remaining)}")
+
+    def _stop_clock(self) -> None:
+        """時計を止める。**最後の経過時間は消さない。**"""
+        if self._clock_job is not None:
+            try:
+                self.root.after_cancel(self._clock_job)
+            except Exception:
+                pass
+            self._clock_job = None
+        if self.started_at is not None:
+            self.elapsed_var.set(self._clock_text())
 
     def _retry_failed(self) -> None:
         """失敗した動画だけをやり直す。
@@ -508,6 +571,7 @@ class CatalogWindow:
             self._append(line)
             self._update_status_from(line)
         self._set_running(False)
+        self._stop_clock()
         code = self.task.result.exit_code
         if code == 0:
             self.status_var.set("処理が終わりました。")

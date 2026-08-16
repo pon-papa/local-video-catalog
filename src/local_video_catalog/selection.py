@@ -90,6 +90,19 @@ class SelectionPlan:
     rule: str = RULE_NORMAL
     videos: list[SelectedVideo] = field(default_factory=list)
     unavailable_total: int = 0
+    time_budget_minutes: float = 0.0
+    """今回の稼働時間（0 は制限なし）。**表示の言葉を選ぶためだけに使う。**
+
+    本数の上限が無いとき、候補は残り全部になる。それを「今回解析する
+    319 本」と書くと、実際には時間で止まるので嘘になる。
+    """
+
+    DETAIL_LIMIT = 10
+    """一覧に並べる本数。**全部並べると画面が埋まって読めない。**
+
+    実運用で 319 本が展開され、その後の進行表示が見えなくなった。
+    上限を指定しているとき（数本）は、そのまま全部出す。
+    """
 
     @property
     def rule_text(self) -> str:
@@ -103,6 +116,7 @@ class SelectionPlan:
             "rule": self.rule,
             "rule_text": self.rule_text,
             "selected_count": len(self.videos),
+            "time_budget_minutes": self.time_budget_minutes,
             "videos": [video.to_dict() for video in self.videos],
         }
 
@@ -115,10 +129,15 @@ class SelectionPlan:
             f"未処理         : {self.outstanding_total} 本",
         ]
         if self.limit > 0:
-            lines.append(f"今回の上限     : {self.limit} 本")
+            lines.append(f"処理本数       : 最大 {self.limit} 本")
+            lines.append(f"今回解析する   : {len(self.videos)} 本")
         else:
-            lines.append("今回の上限     : 指定なし（残りすべて）")
-        lines.append(f"今回解析する   : {len(self.videos)} 本")
+            # **「今回解析する 319 本」と言い切らない。**
+            # 本数の上限が無ければ、実際に何本進むかは時間しだい。
+            lines.append("処理本数       : 制限なし")
+            lines.append(f"解析候補       : {len(self.videos)} 本")
+        if self.time_budget_minutes > 0:
+            lines.append(f"稼働時間       : {self.time_budget_minutes:g} 分")
         lines.append(f"選び方         : {self.rule_text}")
         if self.unavailable_total:
             lines.append(f"見つからない   : {self.unavailable_total} 本"
@@ -126,13 +145,26 @@ class SelectionPlan:
         return lines
 
     def detail_lines(self) -> list[str]:
-        """選ばれた動画と、その理由。"""
+        """選ばれた動画と、その理由。
+
+        **多いときは先頭だけ。** 全部並べると、そのあとの進行表示が
+        画面から押し出されて何も追えなくなる（実運用で 319 本が
+        展開された）。構造化ログ側には全件を残すので、記録は減らない。
+        """
         if not self.videos:
             return ["今回解析する動画はありません。"]
+
+        shown = self.videos
+        if self.limit <= 0 and len(self.videos) > self.DETAIL_LIMIT:
+            shown = self.videos[:self.DETAIL_LIMIT]
+
         lines = ["", "今回の対象:"]
-        for index, video in enumerate(self.videos, start=1):
+        for index, video in enumerate(shown, start=1):
             lines.append(f"  {index}. {video.catalog_id}  {video.file_name}")
             lines.append(f"     理由: {video.describe_reason()}")
+        remaining = len(self.videos) - len(shown)
+        if remaining > 0:
+            lines.append(f"  ほか {remaining} 本（台帳ID順に続きます）")
         return lines
 
     def progress_line(self, index: int) -> list[str]:
@@ -183,6 +215,7 @@ def build_plan(
     ignored_stages: frozenset[str] = frozenset(),
     only_catalog_ids: tuple[str, ...] = (),
     max_videos: int = 0,
+    time_budget_minutes: float = 0.0,
 ) -> SelectionPlan:
     """今回の選択を組み立てる。**台帳を変更しない。**
 
@@ -203,5 +236,6 @@ def build_plan(
         limit=max_videos,
         rule=RULE_RETRY if retry else RULE_NORMAL,
         unavailable_total=len(library.unavailable),
+        time_budget_minutes=time_budget_minutes,
         videos=[_classify(item, retry=retry, database=database,
                           ignored=ignored_stages) for item in chosen])

@@ -64,7 +64,19 @@ class SafeStopResumeTestCase(EndToEndTestCase):
         if recycle_cache:
             arguments.append("--recycle-cache")
         args = pipeline.build_parser().parse_args(arguments)
-        return pipeline.run(args, runners or self.runners())
+        self._last_cleanup = None
+        original = pipeline.cleanup_completed_assets
+
+        def remember(context, **kwargs):
+            found = original(context, **kwargs)
+            self._last_cleanup = found
+            return found
+
+        pipeline.cleanup_completed_assets = remember
+        try:
+            return pipeline.run(args, runners or self.runners())
+        finally:
+            pipeline.cleanup_completed_assets = original
 
     def stop_after(self, stage_name: str,
                    *, on_video: int) -> pipeline.StageRunners:
@@ -106,6 +118,27 @@ class SafeStopResumeTestCase(EndToEndTestCase):
 
     def is_complete(self, asset_id: str) -> bool:
         return all(self.stages_of(asset_id).values())
+
+    def run_pipeline_directly(self, *, max_videos: int = 0,
+                              recycle_cache: bool = False,
+                              runners: pipeline.StageRunners | None = None):
+        """``run_pipeline`` を直に呼ぶ。**集計そのものを見たいとき用。**
+
+        ``run()`` を通さないので、登録はここで済ませる。
+        """
+        self.register_video()
+        return pipeline.run_pipeline(
+            self.context(), self.targets(), runners or self.runners(),
+            skip_stages=self.skip_stages, recycle_cache=recycle_cache)
+
+    def targets_after_register(self):
+        """登録してから対象を取る。"""
+        self.register_video()
+        return self.targets()
+
+    def last_cleanup(self):
+        """直近の実行の整理結果。整理しない設定なら None。"""
+        return getattr(self, "_last_cleanup", None)
 
     def latest_run(self):
         return self.db.connection.execute(

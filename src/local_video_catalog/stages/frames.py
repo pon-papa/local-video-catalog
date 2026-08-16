@@ -163,10 +163,11 @@ def run_frame_extraction(asset_id: str, context) -> "pipeline_module.StageOutcom
 
     if interrupted:
         # 途中で止めた。**completed にしない。** 次回に残りを行う。
-        return pipeline_module.StageOutcome(
-            done=False, status=db_module.STATUS_PARTIAL,
-            failure_kind=pipeline_module.FAILURE_OTHER,
-            message="中断されました。次回は残りだけ行います。")
+        # **失敗ではない**ので、そう分かる形で返す。
+        return pipeline_module.StageOutcome.stopped(
+            db_module.STATUS_PARTIAL,
+            f"止めたため代表画像の抽出を途中で終了しました。"
+            f"{usable} 枚まで作成済みです。次回は残りから再開します。")
 
     if failed:
         # 全部試したうえで一部が取れなかった。動画の末尾が壊れている等、

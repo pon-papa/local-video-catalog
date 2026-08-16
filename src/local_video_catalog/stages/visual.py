@@ -122,9 +122,14 @@ def run_visual_analysis(asset_id: str, context,
     captions: list[str] = []
     succeeded = reused = failed = 0
     blocking: pipeline_module.StageOutcome | None = None
+    interrupted = False
 
     for frame in frames:
         if pipeline_module.stop_requested() or context.out_of_time():
+            # **途中のフレームで視覚概要を作らない。**
+            # 作ってしまうと「完了」になり、次回は少ない枚数のまま
+            # 二度と作り直されない（黙って質が落ちる）。
+            interrupted = True
             break
 
         sha = frame["sha256"] or ""
@@ -210,6 +215,22 @@ def run_visual_analysis(asset_id: str, context,
                 "failed_frame_count": failed, "reused_frame_count": reused,
                 "error_message": blocking.message})
         return blocking
+
+    if interrupted:
+        # 済んだフレームの結果は保存済み。次回はそれを再利用して残りを行う。
+        # **失敗ではない**ので、そう分かる形で返す。
+        done = succeeded + reused
+        with database.transaction():
+            database.finish_visual_run(run_id, {
+                "finished_at": local_now_iso(),
+                "status": db_module.STATUS_INTERRUPTED,
+                "successful_frame_count": succeeded,
+                "failed_frame_count": failed, "reused_frame_count": reused,
+                "error_message": "中断されました。"})
+        return pipeline_module.StageOutcome.stopped(
+            db_module.STATUS_PARTIAL,
+            f"止めたため映像の解析を途中で終了しました。"
+            f"{len(frames)} 枚中 {done} 枚完了。次回は残りから再開します。")
 
     if not captions:
         with database.transaction():

@@ -105,6 +105,15 @@ class StageOutcome:
     status: str
     failure_kind: str = FAILURE_OTHER
     message: str = ""
+    interrupted: bool = False
+    """**利用者が止めた／時間に達しただけ**で、うまくいかなかったのではない。
+
+    ``done`` は False（工程はまだ残っている）だが、失敗として数えない。
+    数えると「失敗 1 件」と出て、直すところが無いのに不安になる。
+
+    **この印を付けるのは工程の側だけ。** 「工程が終わったときに、たまたま
+    時間を過ぎていたから中断扱い」にすると、本物の失敗まで隠れてしまう。
+    """
 
     @classmethod
     def ok(cls, status: str = db_module.STATUS_COMPLETED) -> "StageOutcome":
@@ -115,6 +124,12 @@ class StageOutcome:
         return cls(done=False, status=db_module.STATUS_FAILED,
                    failure_kind=kind,
                    message=message or FAILURE_MESSAGES.get(kind, ""))
+
+    @classmethod
+    def stopped(cls, status: str, message: str) -> "StageOutcome":
+        """止めたので途中まで。**失敗ではない。**"""
+        return cls(done=False, status=status, failure_kind=FAILURE_OTHER,
+                   message=message, interrupted=True)
 
 
 class StageRunner(Protocol):
@@ -178,19 +193,32 @@ def default_runners() -> StageRunners:
 @dataclass
 class PipelineResult:
     stop_reason: str = STOP_FINISHED
+    completed: int = 0
+    """最後の工程まで終わった本数。"""
+
+    interrupted_notes: list[str] = field(default_factory=list)
+    """止めたために途中で終わった工程。**失敗とは別に数える。**"""
     processed: int = 0
     planned: int = 0
     failures: list[str] = field(default_factory=list)
     repeated_failure_message: str = ""
     cleaned_bytes: int = 0
+    cleanup: "CleanupSummary | None" = None
+    """整理した設定のときだけ入る。**表示は run() が行う。**"""
 
     @property
     def ok(self) -> bool:
         return not self.failures
 
+    def failed_videos(self) -> set[str]:
+        """失敗した動画の台帳 ID。**件数ではなく本数を数えるため。**"""
+        return {item.split(" ", 1)[0] for item in self.failures}
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "stop_reason": self.stop_reason, "processed": self.processed,
+            "completed": self.completed,
+            "interrupted": list(self.interrupted_notes),
             "planned": self.planned, "failures": len(self.failures),
             "cleaned_bytes": self.cleaned_bytes,
         }
@@ -287,21 +315,19 @@ def run_pipeline(
 
         stopped, completed = _run_one(
             target, context, runners, result, guard, skip_stages=skip_stages)
+        if completed:
+            result.completed += 1
         if stopped:
             result.stop_reason = stopped
             break
 
-        if completed and recycle_cache:
-            cleanup = recycle.cleanup_intermediate_cache(target.asset_id)
-            if cleanup.ok:
-                result.cleaned_bytes += cleanup.freed_bytes
-                with context.database.transaction():
-                    context.database.record_cache_cleanup(
-                        target.asset_id, status=cleanup.status,
-                        at=local_now_iso(), freed_bytes=cleanup.freed_bytes)
-            else:
-                context.logger.warning(
-                    f"  中間ファイルの整理に失敗しました: {cleanup.error}")
+    if recycle_cache:
+        # **今回終わった分だけでなく、完了済みの動画すべてを見る。**
+        # 以前 cleanup を切って処理した動画の中間ファイルが、
+        # 設定を入れても永久に残るのを避ける。
+        result.cleanup = cleanup_completed_assets(context,
+                                                  skip_stages=skip_stages)
+        result.cleaned_bytes = result.cleanup.freed_bytes
 
     clear_stop_request()
     return result
@@ -350,6 +376,16 @@ def _run_one(
             guard.record_success(stage)
             continue
 
+        if outcome.interrupted:
+            # **止めただけ。** 失敗に数えず、連続失敗ガードにも入れない。
+            # 何がどこまで進んだかは、工程側が message に書いている。
+            note = f"{target.catalog_id} {label}"
+            result.interrupted_notes.append(
+                f"{note}: {outcome.message}" if outcome.message else note)
+            context.logger.info(f"    {outcome.message}")
+            return (STOP_REQUESTED if stop_requested() else STOP_TIME_BUDGET,
+                    False)
+
         result.failures.append(f"{target.catalog_id} {label}")
         context.logger.warning(f"    失敗しました。{outcome.message}")
         context.logger.warning("    これまでの成果は保存済みです。"
@@ -362,6 +398,113 @@ def _run_one(
 
     context.logger.info(f"  {target.catalog_id} 完了")
     return ("", True)
+
+
+@dataclass
+class CleanupSummary:
+    """整理の結果。**1 ファイルずつは出さない。** 全体像だけ伝える。"""
+
+    checked: int = 0
+    cleaned: int = 0
+    already_clean: int = 0
+    failed: int = 0
+    freed_bytes: int = 0
+
+    def lines(self) -> list[str]:
+        gigabytes = self.freed_bytes / (1024 ** 3)
+        size = (f"{gigabytes:,.2f} GB" if gigabytes >= 0.01
+                else f"{self.freed_bytes / (1024 ** 2):,.1f} MB")
+        found = [
+            "中間ファイルの整理:",
+            f"  完了済み動画 {self.checked} 本を確認",
+            f"  ゴミ箱へ移動 {self.cleaned} 本 / {size}",
+            f"  すでに整理済み {self.already_clean} 本",
+        ]
+        if self.failed:
+            found.append(f"  整理できなかった動画 {self.failed} 本"
+                         "（ファイルは残しています）")
+        return found
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"checked": self.checked, "cleaned": self.cleaned,
+                "already_clean": self.already_clean, "failed": self.failed,
+                "freed_bytes": self.freed_bytes}
+
+
+def cleanup_completed_assets(
+    context: RunContext,
+    *,
+    skip_stages: frozenset[str] = frozenset(),
+) -> CleanupSummary:
+    """**完了済みの動画すべて**の中間ファイルをゴミ箱へ送る。
+
+    今回の実行で終わった動画だけを対象にしない。以前 cleanup を切って
+    処理した動画の中間ファイルも、いま整理してよい状態なら対象にする。
+    利用者から見れば「整理する設定にしたのだから、残っているものは
+    片づく」のが自然なため。
+
+    **途中の動画には触らない。** 完了の判定は ``stage_report`` に任せる
+    （選択と同じ規則）。時間切れや安全停止で途中になっている動画の
+    中間成果は、次回の再開に必要なので必ず残る。
+
+    **何度実行しても安全。** すでに整理済みなら対象が無く、
+    ``cleanup_intermediate_cache`` は何もせずに戻る。
+    """
+    summary = CleanupSummary()
+    report = stage_report.collect(context.database,
+                                  ignored_stages=skip_stages)
+
+    for item in report.items:
+        if item.pending(skip_stages):
+            continue          # **まだ途中。再開に要るので触らない。**
+        summary.checked += 1
+
+        cleanup = recycle.cleanup_intermediate_cache(item.asset_id)
+        if not cleanup.ok:
+            summary.failed += 1
+            context.logger.warning(
+                f"  {item.catalog_id} の中間ファイルを整理できませんでした:"
+                f" {cleanup.error}")
+            continue
+
+        if cleanup.status == recycle.CLEANUP_NOTHING:
+            summary.already_clean += 1
+        else:
+            summary.cleaned += 1
+            summary.freed_bytes += cleanup.freed_bytes
+
+        with context.database.transaction():
+            context.database.record_cache_cleanup(
+                item.asset_id, status=cleanup.status, at=local_now_iso(),
+                freed_bytes=cleanup.freed_bytes)
+
+    return summary
+
+
+def refresh_catalog(logger: RunLogger) -> bool:
+    """解析のあとで HTML カタログを作り直す。
+
+    **利用者に「更新」を押させない。** 解析が終わった時点の説明文から
+    作る。途中の動画は説明文が無いので載らない。
+
+    ここで失敗しても、台帳・説明文・解析結果は一切変わらない。
+    HTML は説明文からいつでも作り直せるため、**警告だけ出して続ける。**
+    """
+    from . import html_catalog
+
+    try:
+        records = html_catalog.collect_records()
+        target = html_catalog.write_catalog(records)
+        count = len(records)
+    except Exception as exc:                       # 表示の問題で解析を壊さない
+        logger.warning(f"HTMLカタログを更新できませんでした: {exc}")
+        logger.warning("「HTMLカタログを更新」からやり直せます。"
+                       "説明文と台帳はそのままです。")
+        return False
+
+    logger.info(f"HTMLカタログを更新しました: {target}")
+    logger.info(f"{count} 件")
+    return True
 
 
 def describe_stop(result: PipelineResult, *, limit: int = 3) -> list[str]:
@@ -386,7 +529,20 @@ def describe_stop(result: PipelineResult, *, limit: int = 3) -> list[str]:
     else:
         lines.append("このフォルダーの処理が終わりました。")
 
-    lines.append(f"処理した動画 : {result.processed} / {result.planned} 本")
+    # **「着手した本数」と「終わった本数」を分ける。**
+    # 途中で止めた 1 本を失敗と読ませないため。
+    lines.append(f"完了した動画 : {result.completed} 本"
+                 f"（着手 {result.processed} / 対象 {result.planned} 本）")
+    partial = result.processed - result.completed - len(result.failed_videos())
+    if partial > 0:
+        lines.append(f"途中まで処理 : {partial} 本（次回は続きから行います）")
+    lines.append(f"失敗         : {len(result.failures)} 件")
+
+    if result.interrupted_notes:
+        lines.append("")
+        lines.append("途中で終わった処理:")
+        lines.extend(f"  {item}" for item in result.interrupted_notes[:10])
+
     if result.failures:
         lines.append("")
         lines.append(f"うまくいかなかった処理 {len(result.failures)} 件"
@@ -518,7 +674,8 @@ def run(args: argparse.Namespace,
             plan = selection.build_plan(
                 database, source_root=str(source_root), ignored_stages=skip,
                 only_catalog_ids=tuple(args.only_catalog_id or ()),
-                max_videos=max_videos)
+                max_videos=max_videos,
+                time_budget_minutes=budget_minutes)
 
             logger.info("")
             for line in plan.summary_lines():
@@ -566,6 +723,17 @@ def run(args: argparse.Namespace,
                     files_processed=result.processed,
                     files_failed=len(result.failures),
                     stop_reason=result.stop_reason)
+
+            if result.cleanup is not None:
+                logger.info("")
+                for line in result.cleanup.lines():
+                    logger.info(line)
+                logger.event("cache_cleanup", **result.cleanup.to_dict())
+
+            # **HTML は解析のたびに作り直す。** 止めた場合も、そこまでに
+            # 出来た説明文は反映する（途中の動画は説明文が無いので載らない）。
+            logger.info("")
+            refresh_catalog(logger)
 
         logger.info("")
         logger.info("=" * 62)
