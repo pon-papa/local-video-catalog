@@ -153,6 +153,122 @@ class CleanupSweepTests(SafeStopResumeTestCase):
                 self.assertFalse(paths.is_cleanable(directory))
 
 
+@requires_windows
+class NothingLeftToAnalyseTests(SafeStopResumeTestCase):
+    """未処理が 0 本でも、整理と HTML は行うこと。
+
+    **「後から整理を入れた」が一番ありそうな使い方。** そのとき解析
+    するものは残っていないことが多い。ここで何もしないと、設定した
+    のに永久に片づかない。
+    """
+
+    def frames_of(self, asset_id: str) -> list[Path]:
+        return [p for p in paths.frames_cache_dir().rglob("*.jpg")
+                if asset_id in str(p)]
+
+    def finish_everything_without_cleanup(self) -> list[str]:
+        """1. 全部を整理なしで終わらせる。"""
+        self.run_module(max_videos=0, recycle_cache=False)
+        assets = self.assets_in_order()
+        self.assertTrue(all(self.is_complete(a) for a in assets),
+                        "前提: 全件が完了していること")
+        self.assertEqual(self.targets(), [], "前提: 未処理が 0 本であること")
+        return assets
+
+    def test_old_leftovers_are_cleaned_when_nothing_is_pending(self) -> None:
+        """2 / 3. 未処理 0 本で整理 ON にすると、過去の残りが片づく。"""
+        assets = self.finish_everything_without_cleanup()
+        self.assertTrue(any(self.frames_of(a) for a in assets),
+                        "前提: 中間ファイルが残っていること")
+
+        self.run_module(max_videos=0, recycle_cache=True)
+
+        for asset in assets:
+            with self.subTest(asset=asset):
+                self.assertFalse(self.frames_of(asset),
+                                 "未処理 0 本のとき整理されていません。")
+
+    def test_the_summary_is_still_reported(self) -> None:
+        assets = self.finish_everything_without_cleanup()
+        self.run_module(max_videos=0, recycle_cache=True)
+        summary = self.last_cleanup()
+        self.assertIsNotNone(summary, "整理が実行されていません。")
+        self.assertEqual(summary.checked, len(assets))
+        self.assertEqual(summary.failed, 0)
+        self.assertGreaterEqual(summary.cleaned, 1)
+
+    def test_the_records_survive(self) -> None:
+        """4. 元動画・台帳・説明文は変わらない。"""
+        assets = self.finish_everything_without_cleanup()
+        descriptions = {p.name: p.read_text(encoding="utf-8")
+                        for p in paths.descriptions_dir().glob("*.txt")}
+        self.assertTrue(descriptions, "前提: 説明文があること")
+
+        self.run_module(max_videos=0, recycle_cache=True)
+
+        self.assertEqual(
+            {p.name: p.read_text(encoding="utf-8")
+             for p in paths.descriptions_dir().glob("*.txt")},
+            descriptions, "説明文が変わっています。")
+        for asset in assets:
+            with self.subTest(asset=asset):
+                self.assertTrue(self.is_complete(asset), "台帳が壊れています。")
+        for path, before in self.video_states.items():
+            with self.subTest(name=path.name):
+                self.assertEqual(file_state(path), before)
+
+    def test_doing_it_again_changes_nothing(self) -> None:
+        """5. 冪等。"""
+        self.finish_everything_without_cleanup()
+        self.run_module(max_videos=0, recycle_cache=True)
+        first = self.last_cleanup()
+
+        self.run_module(max_videos=0, recycle_cache=True)
+        second = self.last_cleanup()
+
+        self.assertEqual(second.failed, 0)
+        self.assertEqual(second.cleaned, 0, "2 回目に動かすものはないはず。")
+        self.assertEqual(second.already_clean, first.checked)
+
+    def test_cleanup_off_and_nothing_pending_ends_quietly(self) -> None:
+        """6. 整理しない設定なら、これまでどおり静かに終わる。"""
+        assets = self.finish_everything_without_cleanup()
+        code = self.run_module(max_videos=0, recycle_cache=False)
+        self.assertEqual(code, pipeline.EXIT_OK)
+        self.assertIsNone(self.last_cleanup(), "整理していないのに走っています。")
+        self.assertTrue(any(self.frames_of(a) for a in assets),
+                        "整理しない設定で消えています。")
+
+    def test_the_catalog_is_refreshed_with_nothing_pending(self) -> None:
+        """7. 未処理 0 本でも HTML は最新になる。"""
+        assets = self.finish_everything_without_cleanup()
+        paths.catalog_html_path().unlink(missing_ok=True)
+
+        self.run_module(max_videos=0, recycle_cache=False)
+
+        self.assertTrue(paths.catalog_html_path().is_file(),
+                        "HTMLカタログが作られていません。")
+        text = paths.catalog_html_path().read_text(encoding="utf-8")
+        for record in html_catalog.collect_records():
+            with self.subTest(catalog_id=record.catalog_id):
+                self.assertIn(record.catalog_id, text)
+        self.assertEqual(len(html_catalog.collect_records()), len(assets))
+
+    def test_no_empty_run_is_recorded(self) -> None:
+        """**解析 0 本のために実行履歴を作らない。**
+
+        整理したことは動画ごとの記録と構造化ログに残るので、
+        「0 本処理した実行」を並べても読む人の役に立たない。
+        """
+        self.finish_everything_without_cleanup()
+        before = self.db.connection.execute(
+            "SELECT COUNT(*) FROM processing_runs").fetchone()[0]
+        self.run_module(max_videos=0, recycle_cache=True)
+        after = self.db.connection.execute(
+            "SELECT COUNT(*) FROM processing_runs").fetchone()[0]
+        self.assertEqual(after, before)
+
+
 class CatalogRefreshTests(SafeStopResumeTestCase):
     """2. 解析が終わったら HTML が新しくなる。"""
 

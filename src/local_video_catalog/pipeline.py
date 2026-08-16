@@ -484,6 +484,14 @@ def cleanup_completed_assets(
     return summary
 
 
+def report_cleanup(logger: RunLogger, summary: "CleanupSummary") -> None:
+    """整理の結果を出す。**解析した本数に関係なく同じ形で伝える。**"""
+    logger.info("")
+    for line in summary.lines():
+        logger.info(line)
+    logger.event("cache_cleanup", **summary.to_dict())
+
+
 def refresh_catalog(logger: RunLogger) -> bool:
     """解析のあとで HTML カタログを作り直す。
 
@@ -699,6 +707,20 @@ def run(args: argparse.Namespace,
             if not targets:
                 logger.info("")
                 logger.info("すべての動画の解析が完了しています。")
+
+                # **解析するものが無くても、整理と HTML は行う。**
+                # 後から「整理する」を入れた利用者にとって、何も起きずに
+                # 終わるのは設定した意味が無い。過去に整理を切って処理した
+                # 動画の中間ファイルは、ここでしか片づく機会がない。
+                #
+                # **台帳へ実行記録（processing_runs）は作らない。**
+                # 解析を 1 本もしていないので、実行の履歴としては空になる。
+                # 整理したことは動画ごとの記録と構造化ログに残る。
+                if recycle_cache:
+                    report_cleanup(logger, cleanup_completed_assets(
+                        context, skip_stages=skip))
+                logger.info("")
+                refresh_catalog(logger)
                 return EXIT_OK
 
             with database.transaction():
@@ -728,10 +750,7 @@ def run(args: argparse.Namespace,
                     stop_reason=result.stop_reason)
 
             if result.cleanup is not None:
-                logger.info("")
-                for line in result.cleanup.lines():
-                    logger.info(line)
-                logger.event("cache_cleanup", **result.cleanup.to_dict())
+                report_cleanup(logger, result.cleanup)
 
             # **HTML は解析のたびに作り直す。** 止めた場合も、そこまでに
             # 出来た説明文は反映する（途中の動画は説明文が無いので載らない）。
