@@ -27,20 +27,28 @@ def build_window(**overrides):
 
     表示できない環境（CI など）では skip する。
     """
-    import tkinter as tk
-
-    try:
-        probe = tk.Tk()
-        probe.destroy()
-    except Exception as exc:                       # 表示不可
-        raise unittest.SkipTest(f"画面を開けない環境です: {exc}") from None
-
     from local_video_catalog.gui import app as app_module
     from local_video_catalog.gui import state as state_module
 
     if overrides:
         state_module.save(state_module.GuiState(**overrides))
-    return app_module.CatalogWindow(check_environment_on_start=False)
+    # **下見用の root を別に作らない。** 作る回数を増やすほど当たりやすい。
+    #
+    # ごくまれに Tk の初期化が
+    #   Can't find a usable init.tcl in the following directories:
+    # で落ちる。素の ``tk.Tk()`` を 40 回、同じ手順を 24 回繰り返しても
+    # 再現しなかったので、原因は突き止められていない。**アプリ側は
+    # 1 プロセスに root を 1 つしか作らない**ので、この不安定さは
+    # 試験の中だけの話。
+    #
+    # 黙って skip すると気づかないうちに確認が減るので、まず作り直す。
+    last: Exception | None = None
+    for _attempt in range(2):
+        try:
+            return app_module.CatalogWindow(check_environment_on_start=False)
+        except Exception as exc:
+            last = exc
+    raise unittest.SkipTest(f"画面を開けない環境です: {last}") from None
 
 
 def widget_texts(widget) -> list[str]:

@@ -269,6 +269,74 @@ class NothingLeftToAnalyseTests(SafeStopResumeTestCase):
         self.assertEqual(after, before)
 
 
+class EmptyFolderTests(SafeStopResumeTestCase):
+    """動画が 1 本も無いフォルダーを指定したとき。
+
+    **「すべて完了しています」と言わない。** 指定を間違えた人が、
+    成功したと読んでしまう。
+    """
+
+    def empty_folder(self) -> Path:
+        target = self.temp_dir / "からっぽ"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def run_on(self, folder: Path, *, recycle_cache: bool = False) -> int:
+        arguments = [
+            "--source-folder", str(folder),
+            "--time-budget-minutes", "0", "--max-videos", "1",
+            "--skip-transcription",
+            "--visual-model", FAKE_MODEL,
+        ]
+        if recycle_cache:
+            arguments.append("--recycle-cache")
+        args = pipeline.build_parser().parse_args(arguments)
+        return pipeline.run(args, self.runners())
+
+    def messages(self, folder: Path, **kwargs) -> str:
+        newest_before = set(paths.log_dir().glob("*.log"))
+        self.run_on(folder, **kwargs)
+        added = sorted(set(paths.log_dir().glob("*.log")) - newest_before)
+        self.assertTrue(added, "ログが作られていません。")
+        return added[-1].read_text(encoding="utf-8")
+
+    def test_an_empty_folder_says_nothing_was_found(self) -> None:
+        text = self.messages(self.empty_folder())
+        self.assertIn("動画が見つかりませんでした", text)
+        self.assertNotIn("すべての動画の解析が完了しています", text)
+
+    def test_it_suggests_what_to_check(self) -> None:
+        text = self.messages(self.empty_folder())
+        self.assertIn("フォルダーの指定", text)
+
+    def test_it_ends_safely(self) -> None:
+        self.assertEqual(self.run_on(self.empty_folder()), pipeline.EXIT_OK)
+
+    def test_a_finished_library_still_says_it_is_finished(self) -> None:
+        """**取り違えないこと。** 全部終わっているのは成功。"""
+        self.run_module(max_videos=0)
+        text = self.messages(self.source_root)
+        self.assertIn("すべての動画の解析が完了しています", text)
+        self.assertNotIn("動画が見つかりませんでした", text)
+
+    def test_an_empty_folder_does_not_lose_existing_results(self) -> None:
+        """**別のフォルダーを指しても、既にある成果を消さない。**
+
+        HTML は説明文から作り直すので、入力元が空でも件数は減らない。
+        """
+        self.run_module(max_videos=1)
+        before = sorted(p.name for p in paths.descriptions_dir().glob("*.txt"))
+        self.assertTrue(before, "前提: 説明文があること")
+
+        self.run_on(self.empty_folder())
+
+        self.assertEqual(
+            sorted(p.name for p in paths.descriptions_dir().glob("*.txt")),
+            before, "説明文が消えています。")
+        self.assertEqual(len(html_catalog.collect_records()), len(before),
+                         "HTMLカタログの件数が減っています。")
+
+
 class CatalogRefreshTests(SafeStopResumeTestCase):
     """2. 解析が終わったら HTML が新しくなる。"""
 

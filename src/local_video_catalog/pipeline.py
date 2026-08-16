@@ -706,7 +706,15 @@ def run(args: argparse.Namespace,
                 return EXIT_OK
             if not targets:
                 logger.info("")
-                logger.info("すべての動画の解析が完了しています。")
+                if plan.library_total == 0:
+                    # **「完了しています」と言わない。** 動画が 1 本も
+                    # 無いのに完了と出ると、フォルダーの指定間違いに
+                    # 気づけない（成功したように読めてしまう）。
+                    logger.info("このフォルダーには動画が見つかりませんでした。")
+                    logger.info("フォルダーの指定と、サブフォルダーを含めるか"
+                                "どうかを確認してください。")
+                else:
+                    logger.info("すべての動画の解析が完了しています。")
 
                 # **解析するものが無くても、整理と HTML は行う。**
                 # 後から「整理する」を入れた利用者にとって、何も起きずに
