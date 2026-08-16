@@ -43,10 +43,32 @@ Python の Windows バイナリには Microsoft の再頒布可能コードが
 Tcl と Tk は同一の条項で提供されています。
 
 > **入手元と同一性について**
-> 上記 2 つは python.org 公式からのみ取得し、ファイル名・取得元 URL・SHA-256 を
-> 開発リポジトリの `tools/runtime_sources.json` に記録しています。
-> `tools/build_runtime.py` は記録した SHA-256 と一致する素材でしか
-> `runtime\` を組み立てません。
+> Python と Tcl/Tk は python.org 公式からのみ取得し、ファイル名・取得元 URL・
+> SHA-256 を開発リポジトリの `tools/runtime_sources.json` に記録しています。
+> 文字起こしモデルは `tools/whisper_model_source.json` に同じ形で記録しています。
+> 配布物を作る工程は、記録した SHA-256 と一致する素材でしか進みません。
+
+### Whisper 文字起こしモデル
+
+`userdata\models\whisper\ggml-large-v3-turbo-q5_0.bin` に入っています。
+利用者がモデルを探して配置しなくても、文字起こしを使えるようにするためです。
+
+- ファイル名: `ggml-large-v3-turbo-q5_0.bin`（574,041,195 バイト）
+- SHA-256: `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`
+- 入手元: <https://huggingface.co/ggerganov/whisper.cpp>
+  （`resolve/main/ggml-large-v3-turbo-q5_0.bin`）
+- 内容: OpenAI Whisper **large-v3-turbo** を ggml 形式へ変換し、q5_0 で量子化したもの
+- 上流: <https://github.com/openai/whisper>
+- ライセンス: **MIT**
+  - 配布元のモデルカードが `license: mit` を宣言しています
+  - 上流の OpenAI Whisper も MIT（Copyright © 2022 OpenAI）
+- 著作権表示: Copyright © 2022 OpenAI
+  （許諾文の全文を `userdata\models\whisper\WHISPER_MODEL_LICENSE.txt` に同梱）
+
+変換物の配布元は whisper.cpp プロジェクト（ggerganov）です。
+
+> 別のモデルを使いたい場合は、`userdata\models\whisper\` へ置いて
+> 「ローカルAI設定」で選べます。同梱モデルの削除も自由です。
 
 ---
 
@@ -59,7 +81,6 @@ Tcl と Tk は同一の条項で提供されています。
 | LM Studio | 映像の解析・説明文の生成に使うローカル AI サーバー | <https://lmstudio.ai/> |
 | VLM モデル（例: qwen3-vl-8b-instruct） | 映像の解析 | LM Studio 内のモデル検索から取得します |
 | ffmpeg / ffprobe | 動画情報の取得・静止画の抽出・文字起こし | <https://ffmpeg.org/download.html> |
-| Whisper モデル（`ggml-*.bin`） | 文字起こし | <https://huggingface.co/ggerganov/whisper.cpp> |
 
 ### ffmpeg のライセンスについて
 
@@ -73,9 +94,11 @@ LGPL のもの、GPL のもの、`--enable-nonfree` を含むものなどがあ�
 
 ### モデルについて
 
-VLM モデル・Whisper モデルには、それぞれ配布元が定めるライセンスや
-利用条件があります。モデルの入手時に提示される条件をご確認ください。
-このアプリはモデルを同梱せず、自動ダウンロードも行いません。
+VLM モデルには配布元が定めるライセンスや利用条件があります。
+モデルの入手時に提示される条件をご確認ください。
+
+このアプリは **VLM モデルを同梱せず、自動ダウンロードも行いません**。
+文字起こしモデルだけは上記のとおり同梱しています（MIT）。
 
 ---
 

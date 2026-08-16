@@ -340,8 +340,32 @@ def ffmpeg_has_whisper(ffmpeg_path: Path | None, timeout: int = 30) -> bool:
     )
 
 
+def sibling_tool(known: Path | None, wanted: str) -> Path | None:
+    """片方が分かっているとき、**同じフォルダーのもう片方**を探す。
+
+    ffmpeg と ffprobe は、配布物では同じ ``bin`` に入っているのが普通。
+    片方を見つけた（または利用者が指定した）のに、もう片方をもう一度
+    指定させるのは手間なだけで、意味のある確認になっていない。
+
+    **実在するときだけ返す。** 名前から組み立てたパスを、存在を
+    確かめずに使わない。無ければ ``None`` を返し、これまでどおり
+    利用者が指定できる。
+    """
+    if not known:
+        return None
+    base = Path(known)
+    if not base.is_file():
+        return None
+    candidate = base.with_name(wanted + base.suffix)
+    return candidate.resolve() if candidate.is_file() else None
+
+
 def resolve_ffprobe(settings_dict: dict[str, Any]) -> Path:
-    """ffprobe を解決する。設定値を優先し、無ければ PATH を探す。"""
+    """ffprobe を解決する。
+
+    順に、**設定値 → ffmpeg の隣 → PATH**。設定値がいちばん強い
+    （1 台に複数の ffmpeg があるとき、利用者の指定を勝手に覆さない）。
+    """
     configured = settings_dict.get("ffprobe_path")
     if configured:
         path = Path(configured)
@@ -351,6 +375,10 @@ def resolve_ffprobe(settings_dict: dict[str, Any]) -> Path:
                 "「環境チェック」から ffprobe.exe の場所を指定し直してください。"
             )
         return path.resolve()
+
+    beside = sibling_tool(resolve_ffmpeg(settings_dict), "ffprobe")
+    if beside is not None:
+        return beside
 
     found = shutil.which("ffprobe")
     if not found:
@@ -365,11 +393,19 @@ def resolve_ffmpeg(settings_dict: dict[str, Any]) -> Path | None:
     """ffmpeg を解決する。見つからなくても ``None`` を返して続行する。
 
     登録と ffprobe だけの実行では ffmpeg を使わないため。
+
+    順は ffprobe と同じで、**設定値 → ffprobe の隣 → PATH**。
     """
     configured = settings_dict.get("ffmpeg_path")
     if configured:
         path = Path(configured)
         return path.resolve() if path.is_file() else None
+
+    configured_probe = settings_dict.get("ffprobe_path")
+    if configured_probe:
+        beside = sibling_tool(Path(configured_probe), "ffmpeg")
+        if beside is not None:
+            return beside
 
     found = shutil.which("ffmpeg")
     return Path(found).resolve() if found else None

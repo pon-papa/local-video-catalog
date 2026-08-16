@@ -241,9 +241,19 @@ class UserDocumentTests(unittest.TestCase):
         self.assertIn("まず 1 本", text)
 
     def test_quickstart_does_not_ask_for_python(self) -> None:
-        """runtime を同梱したので、利用者に入れさせない。"""
-        text = (APP_ROOT / "docs" / "QUICKSTART.md").read_text(encoding="utf-8")
-        self.assertIn("Python のインストールは不要", text)
+        """runtime を同梱したので、利用者に入れさせない。
+
+        言い回しは変わりうるので、**「Python は不要」と読めること**と、
+        **入れろと書いていないこと**の 2 点で見る。
+        """
+        text = flat(APP_ROOT / "docs" / "QUICKSTART.md")
+        self.assertIn("Python", text)
+        self.assertIn("不要", text)
+        for asking in ("Pythonをインストールしてください",
+                       "Pythonをインストールし",
+                       "python.orgからPythonを"):
+            with self.subTest(name=asking):
+                self.assertNotIn(asking, text)
 
     def test_troubleshooting_covers_the_common_stops(self) -> None:
         text = (APP_ROOT / "docs" / "TROUBLESHOOTING.md"

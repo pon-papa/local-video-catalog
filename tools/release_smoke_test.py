@@ -46,6 +46,16 @@ FORBIDDEN_SUFFIXES = (
 )
 """配布物に**あってはならない**種類。実データと開発の副産物。"""
 
+ALLOWED_USERDATA = (
+    "userdata/models/whisper/ggml-large-v3-turbo-q5_0.bin",
+    "userdata/models/whisper/WHISPER_MODEL_LICENSE.txt",
+)
+"""**userdata に最初から入ってよい唯一のもの。**
+
+ここを「models 配下は何でもよい」に広げない。広げた瞬間、別のものが
+紛れ込んでも気づけなくなる。名前を 1 つずつ書く。
+"""
+
 FORBIDDEN_NAMES = (
     ".git", ".github", ".gitignore", ".gitattributes",
     "tests", "tools", "__pycache__", "dist",
@@ -82,7 +92,13 @@ def check_contents(archive: Path) -> list[str]:
     with zipfile.ZipFile(archive) as zf:
         names = zf.namelist()
 
+        def inside(name: str) -> str:
+            """先頭の配布フォルダー名を落とした位置。"""
+            return "/".join(Path(name).parts[1:])
+
         for name in names:
+            if inside(name) in ALLOWED_USERDATA:
+                continue
             parts = Path(name).parts[1:]          # 先頭は配布フォルダー名
             if any(part in FORBIDDEN_NAMES for part in parts):
                 raise Failure(f"配布物に入ってはいけないもの: {name}")
@@ -90,10 +106,18 @@ def check_contents(archive: Path) -> list[str]:
                 raise Failure(f"配布物に入ってはいけない種類: {name}")
 
         userdata = [n for n in names if "/userdata/" in n.replace("\\", "/")]
-        not_keep = [n for n in userdata if not n.endswith(".keep")]
-        if not_keep:
-            raise Failure(f"userdata に中身が入っています: {not_keep[:5]}")
-        notes.append(f"userdata は空の骨組み {len(userdata)} か所のみ")
+        extra = [n for n in userdata
+                 if not n.endswith(".keep") and inside(n) not in ALLOWED_USERDATA]
+        if extra:
+            raise Failure(f"userdata に余計なものが入っています: {extra[:5]}")
+
+        bundled = [n for n in userdata if inside(n) in ALLOWED_USERDATA]
+        for wanted in ALLOWED_USERDATA:
+            if not any(inside(n) == wanted for n in userdata):
+                raise Failure(f"同梱するはずのものがありません: {wanted}")
+        notes.append(
+            f"userdata は空の骨組み {len(userdata) - len(bundled)} か所 "
+            f"＋ 同梱資源 {len(bundled)} 件のみ")
 
         required = ("Start.cmd", "launch.py", "app-root.marker", "README.md",
                     "LICENSE", "THIRD_PARTY_NOTICES.md",
@@ -215,6 +239,59 @@ def check_userdata_boundary(extracted: Path, *, cwd: Path) -> list[str]:
             "%APPDATA% / %LOCALAPPDATA% / ユーザーフォルダーへ何も増やさない"]
 
 
+def check_fresh_state(extracted: Path, *, cwd: Path) -> list[str]:
+    """**展開したてに、前の環境の設定が入っていないこと。**
+
+    入力元・本数・稼働時間・整理の設定が引き継がれると、利用者は
+    身に覚えのないフォルダーを解析しかねない。ffmpeg や LM Studio の
+    ように「OS 全体から探してよいもの」とは別の話。
+    """
+    script = (
+        "from local_video_catalog.gui import state as s\n"
+        "st = s.load()\n"
+        "print('source', repr(st.source_folder))\n"
+        "print('max_videos', st.max_videos)\n"
+        "print('budget', st.time_budget_minutes)\n"
+        "print('recycle', st.recycle_cache)\n"
+        "print('visual_model', repr(st.visual_model))\n"
+    )
+    found = dict(line.split(" ", 1)
+                 for line in run_in(extracted, script, cwd=cwd).splitlines())
+
+    if found.get("source") not in ("''", '""'):
+        raise Failure(f"展開直後に入力元が入っています: {found.get('source')}")
+    if found.get("visual_model") not in ("''", '""'):
+        raise Failure(
+            f"展開直後にモデルが選ばれています: {found.get('visual_model')}")
+    if found.get("recycle") != "False":
+        raise Failure("展開直後に整理の設定が入っています。")
+
+    state_file = extracted / "userdata" / "config" / "gui-state.json"
+    settings_file = extracted / "userdata" / "config" / "settings.json"
+    for path in (state_file, settings_file):
+        if path.is_file():
+            raise Failure(f"展開直後に設定ファイルがあります: {path.name}")
+
+    return ["展開直後は入力元・モデル・実行条件ともに空"]
+
+
+def check_bundled_model(extracted: Path, *, cwd: Path) -> list[str]:
+    """同梱した文字起こしモデルを、アプリが**そのまま認識する**こと。"""
+    script = (
+        "from local_video_catalog import asr_engine as ae\n"
+        "c = ae.AsrConfig()\n"
+        "usable, reason = ae.check_model(c)\n"
+        "print('model', c.model_name)\n"
+        "print('usable', usable)\n"
+        "print('reason', reason or '-')\n"
+    )
+    found = dict(line.split(" ", 1)
+                 for line in run_in(extracted, script, cwd=cwd).splitlines())
+    if found.get("usable") != "True":
+        raise Failure(f"同梱モデルを認識できません: {found.get('reason')}")
+    return [f"同梱モデルを認識: {found.get('model')}"]
+
+
 def check_start_cmd(extracted: Path) -> list[str]:
     """``Start.cmd`` が cmd.exe で読める文字コードで書かれていること。"""
     raw = (extracted / "Start.cmd").read_bytes()
@@ -245,6 +322,8 @@ def smoke(archive: Path) -> list[str]:
         notes += check_start_cmd(extracted)
         # **作業ディレクトリを別の場所にして**動かす
         notes += check_startup(extracted, cwd=Path(temp))
+        notes += check_fresh_state(extracted, cwd=Path(temp))
+        notes += check_bundled_model(extracted, cwd=Path(temp))
         notes += check_userdata_boundary(extracted, cwd=Path(temp))
 
         # **フォルダーを移しても動くこと**

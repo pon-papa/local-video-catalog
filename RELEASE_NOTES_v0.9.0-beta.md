@@ -49,10 +49,11 @@
 | VLM モデル（動作確認済み: `qwen3-vl-8b-instruct`） | 映像の解析 | **必須** |
 | [ffmpeg / ffprobe](https://ffmpeg.org/download.html) | 動画情報の取得・静止画の抽出 | **必須** |
 | whisper フィルター入りの ffmpeg（8.x 以降のフル版） | 文字起こし | 任意 |
-| [Whisper モデル（`ggml-*.bin`）](https://huggingface.co/ggerganov/whisper.cpp) | 文字起こし | 任意 |
 
-**Python のインストールは不要です。** 実行に必要な Python 3.13.14 と
-Tcl/Tk を `runtime\` に同梱しています（python.org 公式から取得）。
+**Python と文字起こしモデルの用意は不要です。**
+Python 3.13.14 と Tcl/Tk を `runtime\` に（python.org 公式から取得）、
+Whisper モデル `ggml-large-v3-turbo-q5_0.bin` を
+`userdata\models\whisper\` に同梱しています（MIT）。
 お使いの PC の Python 環境には触れません。
 
 ---
@@ -63,8 +64,9 @@ Tcl/Tk を `runtime\` に同梱しています（python.org 公式から取得�
 - **LM Studio が必須**です。起動していないと解析を開始できません
 - **画像を扱えるモデル（VLM）が必須**です。テキスト専用のモデルでは
   開始できません（実際にテスト画像を 1 枚送って確認しています）
-- **文字起こしには whisper 対応の ffmpeg と Whisper モデルが必要**です。
-  無い場合は「文字起こしを飛ばす」で進められます
+- **文字起こしには whisper 対応の ffmpeg が必要**です（モデルは同梱済み）。
+  無い場合は「文字起こしを飛ばす」で進められます。
+  **チェックを入れない限り、文字起こしを黙って省くことはありません**
 - **処理時間は GPU 性能や動画の長さで大きく変わります。**
   一晩で大量に終わる前提の作りにしていません
 - クラウド AI には対応していません（対応する予定もありません）

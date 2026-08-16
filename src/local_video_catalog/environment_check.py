@@ -340,9 +340,13 @@ def check_transcription(result: CheckResult, raw: dict[str, Any], *,
         result.add("文字起こしモデル", LEVEL_OK,
                    f"{config.model_name}（{size_mb:,.1f} MB）")
     else:
+        # **「このまま進めると飛ばされます」と書かない。**
+        # 実際には開始できない（readiness が止める）。それ以上に、
+        # 利用者が選んでいないのに文字起こしだけ黙って省いた説明文を
+        # 「全部入り」と思わせるのが危ない。選ぶのは利用者。
         result.add("文字起こしモデル", LEVEL_NG, reason,
-                   "userdata\\models\\whisper\\ へモデルを置いてください。"
-                   "（このまま進めると文字起こしだけが飛ばされます）")
+                   "userdata\\models\\whisper\\ へモデルを置くか、"
+                   "「文字起こしを飛ばす」を選んでください。")
 
 
 def check_environment(
