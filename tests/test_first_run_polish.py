@@ -116,18 +116,28 @@ class EnvironmentCheckPathTests(TempDirTestCase):
     def setUp(self) -> None:
         super().setUp()
         import os
+        import sys
 
         self.bin = self.temp_dir / "ffmpeg-full" / "bin"
         self.bin.mkdir(parents=True, exist_ok=True)
+        # **その OS で実行ファイルと見なされる名前**にする。
+        # Windows は .exe、POSIX は拡張子なし。ここを固定すると
+        # shutil.which が見つけられず、CI（Linux）だけ落ちる。
+        self.suffix = ".exe" if sys.platform == "win32" else ""
 
         # PATH をこの bin だけにする＝「PATH から ffmpeg が見つかる」状態
         self._path = os.environ.get("PATH", "")
         os.environ["PATH"] = str(self.bin)
         self.addCleanup(lambda: os.environ.__setitem__("PATH", self._path))
 
-    def place(self, *names: str) -> None:
-        for name in names:
-            (self.bin / name).write_bytes(b"MZ")
+    def place(self, *stems: str) -> None:
+        for stem in stems:
+            target = self.bin / (stem + self.suffix)
+            target.write_bytes(b"MZ")
+            target.chmod(0o755)
+
+    def tool(self, stem: str) -> Path:
+        return (self.bin / (stem + self.suffix)).resolve()
 
     def settings_from(self, **overrides):
         from local_video_catalog import config as cfg
@@ -150,12 +160,11 @@ class EnvironmentCheckPathTests(TempDirTestCase):
 
     def test_ffmpeg_from_path_brings_its_sibling_ffprobe(self) -> None:
         """**実機で落ちた形。** PATH の ffmpeg → 同じ bin の ffprobe。"""
-        self.place("ffmpeg.exe", "ffprobe.exe")
+        self.place("ffmpeg", "ffprobe")
         settings = self.settings_from()
 
-        self.assertEqual(settings.ffmpeg_path, (self.bin / "ffmpeg.exe").resolve())
-        self.assertEqual(settings.ffprobe_path,
-                         (self.bin / "ffprobe.exe").resolve())
+        self.assertEqual(settings.ffmpeg_path, self.tool("ffmpeg"))
+        self.assertEqual(settings.ffprobe_path, self.tool("ffprobe"))
 
         levels, _ = self.levels(settings)
         from local_video_catalog import environment_check as ec
@@ -166,7 +175,7 @@ class EnvironmentCheckPathTests(TempDirTestCase):
 
     def test_no_sibling_reports_ng_without_crashing(self) -> None:
         """見つからなくても、環境チェック自体は最後まで走ること。"""
-        self.place("ffmpeg.exe")                  # ffprobe は置かない
+        self.place("ffmpeg")                      # ffprobe は置かない
         settings = self.settings_from()           # 例外を投げない
         levels, _ = self.levels(settings)
         from local_video_catalog import environment_check as ec
@@ -176,17 +185,17 @@ class EnvironmentCheckPathTests(TempDirTestCase):
 
     def test_an_explicit_ffprobe_still_wins(self) -> None:
         """明示設定はいちばん強いまま。"""
-        self.place("ffmpeg.exe", "ffprobe.exe")
+        self.place("ffmpeg", "ffprobe")
         other = self.temp_dir / "別の場所"
         other.mkdir(parents=True, exist_ok=True)
-        (other / "ffprobe.exe").write_bytes(b"MZ")
+        elsewhere = other / ("ffprobe" + self.suffix)
+        elsewhere.write_bytes(b"MZ")
 
-        settings = self.settings_from(ffprobe_path=str(other / "ffprobe.exe"))
-        self.assertEqual(settings.ffprobe_path,
-                         (other / "ffprobe.exe").resolve())
+        settings = self.settings_from(ffprobe_path=str(elsewhere))
+        self.assertEqual(settings.ffprobe_path, elsewhere.resolve())
 
     def test_both_on_path_is_fine(self) -> None:
-        self.place("ffmpeg.exe", "ffprobe.exe")
+        self.place("ffmpeg", "ffprobe")
         settings = self.settings_from()
         levels, _ = self.levels(settings)
         from local_video_catalog import environment_check as ec
@@ -214,7 +223,7 @@ class EnvironmentCheckPathTests(TempDirTestCase):
 
     def test_both_modes_resolve_the_same_way(self) -> None:
         """**探し方を 2 つ持たない。** 分けたせいで食い違った。"""
-        self.place("ffmpeg.exe", "ffprobe.exe")
+        self.place("ffmpeg", "ffprobe")
         from local_video_catalog import config as cfg
 
         raw = dict(cfg.DEFAULT_SETTINGS)
