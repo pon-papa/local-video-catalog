@@ -14,7 +14,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from _support import APP_ROOT, file_state, find_ffmpeg, make_synthetic_video
+from _support import (APP_ROOT, file_state, find_ffmpeg,
+                      make_synthetic_video, requires_windows)
 from test_end_to_end import FAKE_MODEL
 from test_safe_stop_resume import SafeStopResumeTestCase
 
@@ -24,8 +25,14 @@ from local_video_catalog import html_catalog, paths, pipeline, recycle, selectio
 NEWLINE = "\n"
 
 
+@requires_windows
 class CleanupSweepTests(SafeStopResumeTestCase):
-    """1. 整理は「完了済みの動画すべて」を見る。"""
+    """1. 整理は「完了済みの動画すべて」を見る。
+
+    **ゴミ箱へ実際に送るところまで確かめる**ので Windows でだけ動かす。
+    ゴミ箱の無い環境では整理は失敗として返り、ファイルは残る
+    （完全削除へ逃げないため）。その挙動は test_recycle が押さえている。
+    """
 
     def frames_of(self, asset_id: str) -> list[Path]:
         return [p for p in paths.frames_cache_dir().rglob("*.jpg")

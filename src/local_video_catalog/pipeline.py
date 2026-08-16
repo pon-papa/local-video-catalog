@@ -468,11 +468,14 @@ def cleanup_completed_assets(
             continue
 
         if cleanup.status == recycle.CLEANUP_NOTHING:
+            # **何も動かしていないなら台帳も触らない。**
+            # 毎回 0 バイトで上書きすると、最初に整理したときの記録が
+            # 消えてしまう（いつ・どれだけ片づけたか分からなくなる）。
             summary.already_clean += 1
-        else:
-            summary.cleaned += 1
-            summary.freed_bytes += cleanup.freed_bytes
+            continue
 
+        summary.cleaned += 1
+        summary.freed_bytes += cleanup.freed_bytes
         with context.database.transaction():
             context.database.record_cache_cleanup(
                 item.asset_id, status=cleanup.status, at=local_now_iso(),
