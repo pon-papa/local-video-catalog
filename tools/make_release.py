@@ -100,8 +100,14 @@ def is_excluded(relative: Path) -> bool:
     return Path(relative).suffix.lower() in EXCLUDED_SUFFIXES
 
 
-def collect(root: Path) -> list[Path]:
-    """配布物へ入れるファイルを、**入れると決めたものだけ**集める。"""
+def collect(root: Path, *, require_runtime: bool = True) -> list[Path]:
+    """配布物へ入れるファイルを、**入れると決めたものだけ**集める。
+
+    ``require_runtime`` を False にすると、``runtime`` フォルダーが
+    無くても一覧を作る。中身を確かめたいだけの場面（一覧表示や試験）で使う。
+    **配布物を作るときは必ず True。** runtime の無い ZIP を配ると、
+    利用者は Python を自分で入れる羽目になる。
+    """
     found: list[Path] = []
 
     for name in INCLUDED_FILES:
@@ -120,6 +126,8 @@ def collect(root: Path) -> list[Path]:
         base = root / tree
         if not base.is_dir():
             if tree == "runtime":
+                if not require_runtime:
+                    continue
                 raise SystemExit(
                     "runtime\\ がありません。\n"
                     "  python tools/fetch_runtime_sources.py --version 3.13.14 "
@@ -183,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     root = app_root()
 
     if args.list:
-        for relative in collect(root):
+        for relative in collect(root, require_runtime=False):
             print(relative.as_posix())
         return 0
 

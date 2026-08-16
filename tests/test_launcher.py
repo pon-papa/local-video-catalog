@@ -152,7 +152,9 @@ class DistributionStartupTests(TempDirTestCase):
         import make_release
 
         destination = self.temp_dir / folder_name
-        for relative in make_release.collect(APP_ROOT):
+        # runtime は配布物にだけ要る。ここで見たいのはアプリ本体の
+        # 構成なので、無くても一覧を作れる形で呼ぶ。
+        for relative in make_release.collect(APP_ROOT, require_runtime=False):
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(APP_ROOT / relative, target)
@@ -291,7 +293,9 @@ class RealStartupTests(TempDirTestCase):
         import make_release
 
         app = self.temp_dir / folder_name
-        for relative in make_release.collect(APP_ROOT):
+        # runtime は配布物にだけ要る。ここで見たいのはアプリ本体の
+        # 構成なので、無くても一覧を作れる形で呼ぶ。
+        for relative in make_release.collect(APP_ROOT, require_runtime=False):
             target = app / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(APP_ROOT / relative, target)
