@@ -25,13 +25,18 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .. import APPLICATION_VERSION
 from .. import config as config_module
 from .. import environment_check
 from .. import paths, process_utils
 from . import runner as runner_module
 from . import state as state_module
 
-WINDOW_TITLE = "動画カタログ"
+WINDOW_TITLE = f"Local Video Catalog v{APPLICATION_VERSION}"
+"""**問い合わせのときに版が分かるように**、題名へ番号を入れる。
+
+About のような画面は作らない。題名で足りる。
+"""
 POLL_INTERVAL_MS = 200
 RUNNING_MESSAGE = "処理中です。画面は閉じずにお待ちください。"
 

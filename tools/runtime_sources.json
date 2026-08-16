@@ -1,0 +1,17 @@
+{
+  "python_version": "3.13.14",
+  "fetched_at": "2026-08-16T11:02:27Z",
+  "note": "embeddable package には tkinter が含まれないため、Tcl/Tk は同じ版の tcltk.msi から補う。",
+  "embed": {
+    "file_name": "python-3.13.14-embed-amd64.zip",
+    "source_url": "https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-amd64.zip",
+    "sha256": "90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907",
+    "bytes": 10964839
+  },
+  "tcltk": {
+    "file_name": "tcltk.msi",
+    "source_url": "https://www.python.org/ftp/python/3.13.14/amd64/tcltk.msi",
+    "sha256": "74972be1ae71eeb219b9f5d68158040bf395bb0e92f8bc02288991231475bbef",
+    "bytes": 3276800
+  }
+}

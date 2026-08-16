@@ -11,13 +11,15 @@
 **アプリが生成する状態はすべて APP_ROOT\\userdata\\ の中にある。**
 """
 
-APPLICATION_VERSION = "0.1.0"
+APPLICATION_VERSION = "0.9.0-beta"
 """アプリケーションのバージョン。台帳の processing_runs へ記録する。
 
-0.1.0 = 一般配布版の最初の実装。
+0.9.0-beta = 公開 beta。README・配布 ZIP・リリースノートと同じ値にする
+（利用者が問い合わせるときに、どれを見ても同じ番号になるように）。
 
 **この値は再利用キーに含めない。** 上げても既存の解析結果は
 再処理されない（再利用キーは各工程の IMPL_VERSION と config_hash 側にある）。
+実際、0.1.0 から上げても手元の 51 本は再処理されない。
 """
 
 SCHEMA_VERSION = 2
