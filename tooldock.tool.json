@@ -1,0 +1,131 @@
+{
+  "connector_version": 1,
+  "tool_id": "local-video-catalog",
+  "name": "Local Video Catalog",
+  "version": "0.9.0-beta",
+  "api_version": 1,
+  "description": "手元の動画を解析して作った台帳と説明文を、読み取り専用で検索・参照するローカルツール。解析の開始や台帳の変更はできません（画面で行います）。",
+  "namespace": "videocatalog",
+  "interface": {
+    "type": "json_cli",
+    "runtime": "py",
+    "entry": "tooldock_cli.py",
+    "arguments": "json_stdin",
+    "output": "envelope",
+    "progress": "none"
+  },
+  "capabilities": ["catalog_search", "catalog_read", "environment_check"],
+  "actions": [
+    {
+      "name": "get_capabilities",
+      "title": "できること",
+      "description": "台帳の場所・登録本数・説明文の件数・検索できる項目・状態の絞り込み・並び順を返します。",
+      "command": "capabilities",
+      "access": "read",
+      "input_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["counts", "search_fields", "statuses", "read_only"]},
+      "timeout_seconds": 60
+    },
+    {
+      "name": "environment_check",
+      "title": "解析できる環境かを確かめる",
+      "description": "ffmpeg・ffprobe・文字起こしモデル・ローカル AI（LM Studio、localhost のみ）など、解析を始める前の環境を確かめて結果を返します。確かめるだけで、解析は始めません。quick が true（既定）なら、時間のかかる画像での確認を省きます。",
+      "command": "environment_check",
+      "access": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "quick": {"type": "boolean", "default": true},
+          "skip_transcription": {"type": "boolean", "default": false}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["check", "can_start", "readiness"]},
+      "timeout_seconds": 180
+    },
+    {
+      "name": "search",
+      "title": "台帳を検索する",
+      "description": "説明文（台帳ID・ファイル名・記録時期・内容・概要欄用の文）を、空白区切りのすべての語を含むもので検索します。HTML カタログと同じ読み方です。include_transcripts が true なら、文字起こしの本文でも探します。status で絞り込み（done / date-unknown / date-ambiguous / no-speech / no-visual / template）、order で並び替えできます。記録時期の「解釈保留」「不明」は日付として扱いません。",
+      "command": "search",
+      "access": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "maxLength": 200, "default": "", "description": "検索語（空白区切りで AND）。空ならすべて"},
+          "status": {"type": "string", "enum": ["all", "done", "date-unknown", "date-ambiguous", "no-speech", "no-visual", "template"], "default": "all"},
+          "order": {"type": "string", "enum": ["period", "period-desc", "name"], "default": "period"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+          "offset": {"type": "integer", "minimum": 0, "maximum": 1000000, "default": 0},
+          "include_transcripts": {"type": "boolean", "default": false}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["total", "count", "results"]},
+      "timeout_seconds": 120
+    },
+    {
+      "name": "get_video",
+      "title": "1本の動画の台帳情報",
+      "description": "台帳ID（例: VID-000001）で、1本の動画の登録情報・元ファイルの場所・長さや解像度・撮影日時の候補・映像の要約・処理段階の状態・説明文を返します。",
+      "command": "get_video",
+      "access": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "catalog_id": {"type": "string", "minLength": 1, "maxLength": 64, "description": "台帳ID（例: VID-000001）"}
+        },
+        "required": ["catalog_id"],
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["catalog_id", "asset", "stages"]},
+      "timeout_seconds": 60
+    },
+    {
+      "name": "get_description",
+      "title": "説明文を読む",
+      "description": "台帳IDの動画の説明文（保存されたテキストそのものと、項目ごとの値）を返します。include_transcript が true なら、文字起こしの本文も付けます（AI の推定で、聞き間違いを含むことがあります）。",
+      "command": "get_description",
+      "access": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "catalog_id": {"type": "string", "minLength": 1, "maxLength": 64},
+          "include_transcript": {"type": "boolean", "default": false}
+        },
+        "required": ["catalog_id"],
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["catalog_id", "fields", "text"]},
+      "timeout_seconds": 60
+    },
+    {
+      "name": "list_recent",
+      "title": "最近説明文ができた動画",
+      "description": "説明文が作られた（更新された）日時の新しい順に、動画を返します。",
+      "command": "list_recent",
+      "access": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["count", "results"]},
+      "timeout_seconds": 60
+    }
+  ],
+  "health_check": {"action": "get_capabilities"},
+  "requirements": {
+    "python": ">=3.11",
+    "packages": [],
+    "local_ai": ["LM Studio (only for analysis in the GUI; not used by these actions)"]
+  },
+  "data_policy": {
+    "catalog": "read_only",
+    "source_videos": "not_accessed",
+    "network": "localhost_only (environment_check)",
+    "runtime_download": false
+  }
+}
