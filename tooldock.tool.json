@@ -1,10 +1,10 @@
 {
-  "connector_version": 1,
+  "connector_version": 2,
   "tool_id": "local-video-catalog",
   "name": "Local Video Catalog",
   "version": "0.9.0-beta",
   "api_version": 1,
-  "description": "手元の動画を解析して作った台帳と説明文を、読み取り専用で検索・参照するローカルツール。解析の開始や台帳の変更はできません（画面で行います）。",
+  "description": "手元の動画を解析して台帳と説明文を作るローカルツール。台帳と説明文の検索・参照は読み取り専用の操作で、長時間の解析は job（analyze）で行います。job は人の確認のうえ登録され、人が ToolDock Job Runner を起動したときに始まります。",
   "namespace": "videocatalog",
   "interface": {
     "type": "json_cli",
@@ -12,9 +12,9 @@
     "entry": "tooldock_cli.py",
     "arguments": "json_stdin",
     "output": "envelope",
-    "progress": "none"
+    "progress": "stderr_jsonl"
   },
-  "capabilities": ["catalog_search", "catalog_read", "environment_check"],
+  "capabilities": ["catalog_search", "catalog_read", "environment_check", "video_analysis_job"],
   "actions": [
     {
       "name": "get_capabilities",
@@ -114,18 +114,48 @@
       },
       "output_schema": {"type": "object", "required": ["count", "results"]},
       "timeout_seconds": 60
+    },
+    {
+      "name": "analyze",
+      "title": "動画フォルダーを解析する（長時間の job）",
+      "description": "source_folder の動画を、画面の「解析を開始」と同じ仕組みで解析します（登録 → 代表画像 → 映像の解析 → 文字起こし → 説明文 → HTML カタログ）。元動画は読むだけで、結果はこのアプリのフォルダーの台帳と説明文に保存します。使うモデルは画面で選んだもので、ここでは指定できません。始める前に環境チェック（画像の確認を含む）を行い、開始できなければ何も書かずに environment_not_ready で止まります。済んだ工程は飛ばすので、止めた・中断した解析は、同じ内容でもう一度行うと続きから処理します。time_budget_minutes に達するか max_videos 本（0 は制限なし）に着手すると区切りで止まります。登録前に environment_check（quick: false）で確かめるとよいです。",
+      "command": "analyze",
+      "access": "write",
+      "progress": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_folder": {"type": "string", "x-path": "media_folder", "description": "解析する動画のフォルダー（許可された media root の中）"},
+          "recursive": {"type": "boolean", "default": false, "description": "サブフォルダーも含める"},
+          "max_videos": {"type": "integer", "minimum": 0, "maximum": 100000, "default": 0, "description": "今回あらたに着手する本数の上限（0 は制限なし）"},
+          "time_budget_minutes": {"type": "integer", "minimum": 1, "maximum": 1320, "default": 60, "description": "稼働時間（分）。達したら区切りで止まる"},
+          "skip_transcription": {"type": "boolean", "default": false, "description": "文字起こしを飛ばす（映像の解析は飛ばせない）"}
+        },
+        "required": ["source_folder"],
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object", "required": ["outcome", "processed", "completed", "library"]},
+      "timeout_seconds": 86400,
+      "job": {
+        "cancel": "cooperative",
+        "cancel_grace_seconds": 600,
+        "resumable": false,
+        "stall_seconds": 2400,
+        "confirmation_required": true,
+        "resources": {"max_concurrent": 1, "gpu_exclusive": true, "cpu_heavy": true}
+      }
     }
   ],
   "health_check": {"action": "get_capabilities"},
   "requirements": {
     "python": ">=3.11",
     "packages": [],
-    "local_ai": ["LM Studio (only for analysis in the GUI; not used by these actions)"]
+    "local_ai": ["LM Studio (the analyze job and analysis in the GUI; the read actions do not use it)"]
   },
   "data_policy": {
-    "catalog": "read_only",
-    "source_videos": "not_accessed",
-    "network": "localhost_only (environment_check)",
+    "catalog": "read_only (read actions) / written by the analyze job, inside this folder's userdata only",
+    "source_videos": "read_only (analyze reads them; nothing is written next to them)",
+    "network": "localhost_only (environment_check, analyze)",
     "runtime_download": false
   }
 }

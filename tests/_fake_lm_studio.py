@@ -25,6 +25,32 @@ TEXT_ONLY = "text_only"
 SLOW = "slow"
 SERVER_ERROR = "server_error"
 EMPTY = "empty"
+CATALOG = "catalog"
+"""解析の全工程に答える（フレーム解析・視覚概要・説明文）。
+
+応答は ``test_end_to_end`` の ``FakeClient`` と同じ。別プロセスで動く解析
+（コマンドラインや ToolDock の job の入口）を、本物の LM Studio 無しで最後まで
+通すため。``delay_seconds`` を付けると 1 要求ごとに待つ（長い解析の代わり）。
+"""
+
+FRAME_REPLY = ('{"caption": "屋外で人が歩いている様子。",'
+               ' "setting": "屋外", "readable": true}')
+SUMMARY_REPLY = ('{"title_candidate": "屋外の記録",'
+                 ' "visual_summary": "屋外で人が歩いている様子が続く。",'
+                 ' "main_activity": "歩いている"}')
+DESCRIPTION_REPLY = ('{"content": "屋外で人が歩いている記録です。",'
+                     ' "youtube": "屋外で撮影した記録です。"}')
+
+
+def catalog_reply(payload: dict) -> str:
+    """要求の中身で工程を見分ける（``FakeClient.chat`` と同じ規則）。"""
+    messages = payload.get("messages") or [{}]
+    content = messages[0].get("content")
+    if isinstance(content, list):
+        return FRAME_REPLY
+    if "動画全体の概要" in str(content or ""):
+        return SUMMARY_REPLY
+    return DESCRIPTION_REPLY
 
 
 class FakeLmStudio:
@@ -73,8 +99,16 @@ class FakeLmStudio:
                 except ValueError:
                     owner.requests.append({})
 
-                if owner.behaviour == SLOW:
+                if owner.behaviour in (SLOW, CATALOG) and owner.delay_seconds:
                     time.sleep(owner.delay_seconds)
+                if owner.behaviour == CATALOG:
+                    self._send(200, {
+                        "choices": [{"message": {"content": catalog_reply(
+                            owner.requests[-1])}}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 20,
+                                  "total_tokens": 30},
+                    })
+                    return
                 if owner.behaviour == TEXT_ONLY:
                     self._send(400, {"error": {
                         "message": "this model does not support images"}})

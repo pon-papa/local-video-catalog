@@ -111,10 +111,19 @@ class ManifestTests(unittest.TestCase):
         sys.path.insert(0, str(APP_ROOT))
         import tooldock_cli
         spec = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        self.assertEqual(spec["connector_version"], 1)
+        self.assertEqual(spec["connector_version"], 2)
         self.assertEqual(spec["interface"]["entry"], CLI.name)
         self.assertEqual({a["command"] for a in spec["actions"]}, set(tooldock_cli.COMMANDS))
-        self.assertTrue(all(a["access"] == "read" for a in spec["actions"]))
+        # 読み取りの操作は今までどおり読み取りだけ。書くのは長時間の job（analyze）だけ
+        for action in spec["actions"]:
+            if action["name"] == "analyze":
+                self.assertEqual(action["access"], "write")
+                self.assertTrue(action["job"]["confirmation_required"])
+                self.assertTrue(action["job"]["resources"]["gpu_exclusive"])
+                self.assertFalse(action["job"]["resumable"])
+            else:
+                self.assertEqual(action["access"], "read", action["name"])
+                self.assertNotIn("job", action)
         search = next(a for a in spec["actions"] if a["name"] == "search")
         props = search["input_schema"]["properties"]
         self.assertEqual(tuple(props["status"]["enum"]), tooldock_cli.STATUSES)

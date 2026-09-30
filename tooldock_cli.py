@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-"""動画カタログを画面なしで問い合わせる入口（ToolDock Connector v1 / JSON CLI）。
+"""動画カタログを画面なしで使う入口（ToolDock Connector / JSON CLI）。
 
-**読み取り専用。** 台帳（SQLite）は read-only で開き、説明文は読むだけ。
-解析を始めたり、台帳・説明文・設定・元動画を変えたりする操作はここに無い。
-長時間の解析（映像の解析・文字起こし）は画面から行う。
+読み取りの操作（Connector v1）: 台帳（SQLite）は read-only で開き、説明文は読むだけ。
 
     python tooldock_cli.py capabilities      --input-json -
     python tooldock_cli.py environment_check --input-json -
@@ -11,6 +9,19 @@
     python tooldock_cli.py get_video         --input-json -
     python tooldock_cli.py get_description   --input-json -
     python tooldock_cli.py list_recent       --input-json -
+
+長時間の解析（Connector v2 の job。ToolDock Job Runner から呼ばれる）:
+
+    python tooldock_cli.py analyze           --input-json -
+
+- ``analyze`` は画面の「解析を開始」と同じ ``pipeline.run()`` を、画面と同じ引数で呼ぶだけ。
+  解析・止めどき・再開（済んだ工程を飛ばす）は、すべてこのアプリの既存の仕組みのまま
+- 保存先はこのフォルダー（APP_ROOT）の userdata だけ。使うモデルは**画面で選んだもの**。
+  引数で保存先・モデル・外部プログラムは指定できない
+- 始める前に既存の環境チェック（画像の確認を含む）を行い、開始できなければ何も書かずに断る
+- ``TOOLDOCK_CANCEL_FILE`` が現れたら、既存の停止要求（``pipeline.request_stop()``）を置くだけ。
+  解析は区切りで自分から止まり、台帳と中間成果は次回の再開のために残る
+- 進捗は標準エラーへ JSON を1行ずつ（工程を始めるたび）
 
 - 引数は標準入力の JSON オブジェクト1つ。標準出力には JSON を1行だけ出す
     成功: {"ok": true, "result": {...}}
@@ -25,9 +36,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -179,7 +193,8 @@ def capabilities(args: dict) -> dict:
         "statuses": dict(html_catalog.STATUS_FILTERS),
         "orders": list(ORDERS),
         "read_only": True,
-        "notes": ["台帳と説明文は読むだけ。解析の開始・停止・再開はここではできない（画面で行う）",
+        "notes": ["この操作と検索系の操作は台帳と説明文を読むだけ。長時間の解析は画面か、"
+                  "ToolDock の job（analyze。人が確認し、人が Job Runner を起動したときに始まる）で行う",
                   "記録時期の「解釈保留」「不明」を日付へ読み替えない",
                   "説明文はローカル AI が作ったもので、人物・場所・行事は確認されていない"],
     }
@@ -352,8 +367,218 @@ def list_recent(args: dict) -> dict:
     return {"count": len(results), "results": results}
 
 
+# ---------------------------------------------------------------- long-running analysis (Connector v2 job)
+ANALYZE_KEYS = {"source_folder", "recursive", "max_videos", "time_budget_minutes", "skip_transcription"}
+MAX_BUDGET_MINUTES = 1320
+"""22 時間。ToolDock の job の上限（24 時間）より前に、必ず自分の止めどきで止まるように。"""
+MAX_VIDEOS = 100_000
+CANCEL_POLL_SECONDS = 0.5
+OUTCOMES = {"finished": "completed", "time_budget": "stopped_time_budget",
+            "max_videos": "stopped_max_videos", "repeated_failure": "stopped_repeated_failure",
+            "stop_requested": "stopped_by_request"}
+
+
+def _progress(phase: str, done: int, total: int) -> None:
+    """進捗を標準エラーへ（JSON 1 行）。読むのは ToolDock。単体で使うときは無視してよい。"""
+    sys.stderr.write(json.dumps({"event": "progress", "phase": phase, "done": done, "total": total},
+                                ensure_ascii=True) + "\n")
+    sys.stderr.flush()
+
+
+class _CancelBridge:
+    """ToolDock の取り消しの合図（TOOLDOCK_CANCEL_FILE）を、このアプリの停止要求へつなぐ。
+
+    自分では止めない。既存の ``pipeline.request_stop()``（stop-request ファイル）を置くだけで、
+    解析は動画・工程・フレーム・チャンクの区切りで自分から止まる。"""
+
+    def __init__(self) -> None:
+        self.path = os.environ.get("TOOLDOCK_CANCEL_FILE") or ""
+        self.requested = threading.Event()
+        self._closing = threading.Event()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+
+    def __enter__(self) -> "_CancelBridge":
+        if self.path:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._closing.set()
+
+    def seen(self) -> bool:
+        if not self.requested.is_set() and self.path and os.path.exists(self.path):
+            self.requested.set()
+        return self.requested.is_set()
+
+    def _watch(self) -> None:
+        from local_video_catalog import pipeline
+        while not self._closing.wait(CANCEL_POLL_SECONDS):
+            if self.seen():
+                pipeline.request_stop()
+                return
+
+
+class _Observer:
+    """``pipeline.run`` の見るだけの口と、工程の実体の包み（工程を始めるたびに進捗を出す）。"""
+
+    def __init__(self) -> None:
+        self.run_id: str | None = None
+        self.total = 0
+        self.order: dict[str, tuple[int, str]] = {}
+        self.result = None
+
+    def on_targets(self, run_id: str, targets: list) -> None:
+        self.run_id = run_id
+        self.total = len(targets)
+        self.order = {t.asset_id: (index, t.catalog_id) for index, t in enumerate(targets, start=1)}
+        _progress(f"対象 {self.total} 本", 0, self.total)
+
+    def on_result(self, result) -> None:
+        self.result = result
+        _progress("HTMLカタログの更新", result.processed, self.total)
+
+    def wrap(self, runners):
+        from local_video_catalog import database as db_module
+        for stage, label in db_module.PIPELINE_STAGES:
+            runner = runners.for_stage(stage)
+            if runner is not None:
+                setattr(runners, stage, self._announce(label, runner))
+        return runners
+
+    def _announce(self, label: str, runner):
+        def call(asset_id, context):
+            index, catalog_id = self.order.get(asset_id, (0, "?"))
+            _progress(f"{index}/{self.total} {catalog_id} {label}", max(0, index - 1), self.total)
+            return runner(asset_id, context)
+        return call
+
+
+@contextmanager
+def _console_to_null():
+    """解析の画面向けの出力を捨てる（標準出力は最後の JSON 1 行だけにする）。
+
+    記録は捨てない: 同じ内容がこのアプリのログ（userdata/logs）に残る。"""
+    saved = sys.stdout
+    sink = open(os.devnull, "w", encoding="utf-8")
+    sys.stdout = sink
+    try:
+        yield
+    finally:
+        sys.stdout = saved
+        sink.close()
+
+
+def _job_state(args: dict):
+    """job の引数を、画面の状態（GuiState）へ写す。**モデルは画面で選んだもの。**"""
+    _keys(args, ANALYZE_KEYS)
+    source = args.get("source_folder")
+    if not isinstance(source, str) or not os.path.isabs(source) or not Path(source).is_dir():
+        raise CliError("invalid_arguments", "source_folder は既存のフォルダーの絶対パスです。")
+    recursive = _flag(args, "recursive", False)
+    max_videos = _int(args, "max_videos", 0, 0, MAX_VIDEOS)
+    budget = _int(args, "time_budget_minutes", 60, 1, MAX_BUDGET_MINUTES)
+    skip = _flag(args, "skip_transcription", False)
+    from local_video_catalog.gui import state as gui_state
+    saved = gui_state.load()
+    return gui_state.GuiState(
+        source_folder=source, recursive=recursive, time_budget_minutes=budget,
+        max_videos=max_videos, no_time_limit=False, no_video_limit=(max_videos == 0),
+        skip_transcription=skip, recycle_cache=False,
+        visual_model=saved.visual_model, description_model=saved.description_model,
+        whisper_model=saved.whisper_model)
+
+
+def _readiness(state):
+    """画面の「解析を開始」と同じ条件で、始められるかを確かめる。**何も書き換えない。**"""
+    from local_video_catalog import config as config_module
+    from local_video_catalog import environment_check as ec
+    try:
+        raw = config_module.load_settings_dict()
+        raw["source_path"] = state.source_folder
+        if state.recursive:
+            raw["recursive"] = True
+        ec.apply_model_choices(raw, visual_model=state.visual_model.strip(),
+                               whisper_model=state.whisper_model.strip() or None)
+        settings = config_module.build_settings(raw, require_ffprobe=False)
+    except config_module.ConfigError as exc:
+        raise CliError("config_error", str(exc)) from None
+    result = ec.check_environment(raw=raw, settings=settings, source_folder=state.source_folder,
+                                  skip_transcription=state.skip_transcription, quick=False)
+    return result.readiness(skip_transcription=state.skip_transcription)
+
+
+def analyze(args: dict) -> dict:
+    state = _job_state(args)
+    _app_root()
+    from local_video_catalog import database as db_module
+    from local_video_catalog import pipeline, stage_report
+
+    with _CancelBridge() as cancel:
+        _progress("環境の確認", 0, 0)
+        readiness = _readiness(state)
+        if not readiness.can_start:
+            raise CliError("environment_not_ready",
+                           "解析を始められる環境ではありません（台帳には何も書いていません）: "
+                           + " / ".join(readiness.detail_lines())[:1500])
+        if cancel.seen():
+            raise CliError("cancelled", "始める前に止めました。台帳には何も書いていません。")
+        _progress("動画の登録と基本情報", 0, 0)
+        observer = _Observer()
+        parsed = pipeline.build_parser().parse_args(state.pipeline_arguments())
+        try:
+            with _console_to_null():
+                code = pipeline.run(parsed, observer.wrap(pipeline.default_runners()),
+                                    on_targets=observer.on_targets, on_result=observer.on_result)
+        finally:
+            if cancel.seen():
+                pipeline.clear_stop_request()     # 解析が終わった後に届いた合図を残さない
+
+    if code == pipeline.EXIT_CONFIG_ERROR:
+        raise CliError("config_error", "設定エラーで始められませんでした（詳しくは画面の環境チェック）。")
+    if code == pipeline.EXIT_NO_SOURCE:
+        raise CliError("no_source", "解析する動画のフォルダーがありません。")
+
+    ignored = frozenset({db_module.STAGE_AUDIO_TRANSCRIPTION}) if state.skip_transcription else frozenset()
+    with db_module.CatalogDatabase() as database:
+        report = stage_report.collect(database, source_root=Path(state.source_folder), ignored_stages=ignored)
+    pending = len(report.pending)
+    unavailable = len(report.unavailable)
+    library = {"videos": report.total, "done": report.total - pending - unavailable,
+               "pending": pending, "unavailable": unavailable}
+
+    result = observer.result
+    if cancel.seen() and (result is None or result.stop_reason == pipeline.STOP_REQUESTED):
+        done = result.completed if result else 0
+        raise CliError("cancelled", f"止めました（今回完了 {done} 本）。済んだ工程は台帳に残り、"
+                                    "同じ解析をもう一度行うと続きから処理します。")
+    if result is None:
+        outcome = "no_videos" if report.total == 0 else "nothing_to_do"
+        summary = {"planned": 0, "processed": 0, "completed": 0, "failures": 0,
+                   "failed_videos": [], "interrupted": 0, "stop_reason": None}
+    else:
+        outcome = OUTCOMES.get(result.stop_reason, result.stop_reason)
+        if outcome == "completed" and result.failures:
+            outcome = "completed_with_errors"
+        summary = {"planned": result.planned, "processed": result.processed, "completed": result.completed,
+                   "failures": len(result.failures), "failed_videos": sorted(result.failed_videos()),
+                   "interrupted": len(result.interrupted_notes), "stop_reason": result.stop_reason}
+    from local_video_catalog import paths
+    return {
+        "outcome": outcome, "run_id": observer.run_id, **summary, "library": library,
+        "descriptions": len(list(paths.descriptions_dir().glob("*.txt"))),
+        "catalog_html": "userdata/catalog/catalog.html" if paths.catalog_html_path().is_file() else None,
+        "options": {"recursive": state.recursive, "max_videos": state.max_videos,
+                    "time_budget_minutes": state.time_budget_minutes,
+                    "skip_transcription": state.skip_transcription},
+        "visual_model": state.visual_model.strip(),
+        "notes": ["失敗した動画・途中の動画は、同じ解析をもう一度行うと続きから処理される",
+                  "結果の中身は search / get_video / get_description で読む"],
+    }
+
+
 COMMANDS = {"capabilities": capabilities, "environment_check": environment_check, "search": search,
-            "get_video": get_video, "get_description": get_description, "list_recent": list_recent}
+            "get_video": get_video, "get_description": get_description, "list_recent": list_recent,
+            "analyze": analyze}
 
 
 class Parser(argparse.ArgumentParser):

@@ -175,24 +175,27 @@ python tools/make_release.py
 `docs/MIGRATION_PLAN.md` / `docs/GUI_FEATURE_PARITY.md` / `docs/PYTHON_RUNTIME.md`
 にあります（**配布 ZIP には入れていません**。読む相手が違うためです）。
 
-### AI・自動化から台帳を問い合わせる（任意）
+### AI・自動化から台帳を問い合わせる・解析を頼む（任意）
 
 **通常の利用には不要です。**画面（`Start.cmd`）は、ToolDock・MCP・AI が無くても
 これまでどおり動きます。アプリ本体はこの入口も ToolDock も読み込みません
 （この入口は配布 ZIP にも入っていません）。
 
-AI や自動化から台帳を検索したい場合だけ、別プロジェクトの ToolDock が
+AI や自動化から使いたい場合だけ、別プロジェクトの ToolDock が
 `tooldock_cli.py` を呼び出します。できることは `tooldock.tool.json`
-（ToolDock Connector v1）に書いてあります。
+（ToolDock Connector v2）に書いてあります。
 
 ```bash
 python tooldock_cli.py search --input-json -
 ```
 
-- **読み取り専用です。** 台帳（SQLite）は読み取り専用で開き、説明文は読むだけです。
-  台帳のフォルダーにファイルを増やすこともしません
-- 解析の開始・停止・再開はできません（何時間もかかるため、画面で行います）
-- 元動画には触れません。通信は環境確認での localhost（LM Studio）だけです
+- **検索・参照の操作は読み取り専用です。** 台帳（SQLite）は読み取り専用で開き、説明文は読むだけです。
+  台帳のフォルダーにファイルを増やすこともしません。元動画には触れません
+- **長時間の解析**は job（`analyze`）として頼めます。画面の「解析を開始」と同じ仕組み・同じ引数で動き、
+  使うモデルは画面で選んだものです。job は人の確認のうえ登録され、**人が ToolDock Job Runner を起動したときに**
+  始まります。止めると区切りで止まり、同じ解析をもう一度行うと続きから処理します。
+  仕組みと分担は [docs/TOOLDOCK_JOBS.md](docs/TOOLDOCK_JOBS.md)
+- 通信は localhost（LM Studio）だけです
 
 ---
 

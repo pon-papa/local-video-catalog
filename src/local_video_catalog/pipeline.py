@@ -609,7 +609,18 @@ def _skip_stages(args: argparse.Namespace, raw: dict[str, Any]) -> frozenset[str
 
 
 def run(args: argparse.Namespace,
-        runners: StageRunners | None = None) -> int:
+        runners: StageRunners | None = None, *,
+        on_targets: Callable[[str, list[stage_report.AssetProgress]], None] | None = None,
+        on_result: Callable[[PipelineResult], None] | None = None) -> int:
+    """コマンドラインと同じ 1 回の実行。
+
+    ``on_targets`` / ``on_result`` は**見るだけ**の口。処理の中身・順序・止めどきは変えない。
+    別のプログラムからこの実行を動かすとき、「今回の対象（何本・どの台帳 ID）」と
+    「どう終わったか」を、画面の文字を読まずに受け取れるようにするため。
+
+      on_targets(run_id, targets)  対象を選んだ直後（対象が 0 本でも呼ぶ。予定のみでも呼ぶ）
+      on_result(result)            実行記録を閉じた直後（解析した場合だけ）
+    """
     configure_stdio_utf8()
     try:
         raw = config_module.load_settings_dict(args.config)
@@ -694,6 +705,8 @@ def run(args: argparse.Namespace,
             for line in plan.detail_lines():
                 logger.info(line)
             logger.event("selection_plan", **plan.to_dict())
+            if on_targets is not None:
+                on_targets(run_id, list(targets))
 
             if args.dry_run:
                 logger.info("")
@@ -756,6 +769,8 @@ def run(args: argparse.Namespace,
                     files_processed=result.processed,
                     files_failed=len(result.failures),
                     stop_reason=result.stop_reason)
+            if on_result is not None:
+                on_result(result)
 
             if result.cleanup is not None:
                 report_cleanup(logger, result.cleanup)
